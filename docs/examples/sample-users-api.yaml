@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: Users Management Service API
+  description: Sample user management API specification used for testing MockAPILab contract ingestion and stateful mock generation.
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      summary: List all users
+      description: Retrieve a paginated list of registered users.
+      operationId: listUsers
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of records to return
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          description: Number of records to skip
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated array of user objects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      summary: Create new user
+      description: Register a new user in the system.
+      operationId: createUser
+      requestBody:
+        description: User creation attributes
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{id}:
+    get:
+      summary: Get user by ID
+      description: Retrieve detailed user profile by unique identifier.
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          description: Unique user UUID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User details found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Delete user by ID
+      description: Remove user account from the system.
+      operationId: deleteUserById
+      parameters:
+        - name: id
+          in: path
+          description: Unique user UUID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deleted successfully
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    RoleEnum:
+      type: string
+      enum:
+        - ADMIN
+        - DEVELOPER
+        - VIEWER
+
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - name
+        - role
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        email:
+          type: string
+          format: email
+          example: jane.doe@example.com
+        name:
+          type: string
+          example: Jane Doe
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        active:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-12T03:00:00Z'
+
+    UserCreateRequest:
+      type: object
+      required:
+        - email
+        - name
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+          example: jane.doe@example.com
+        name:
+          type: string
+          example: Jane Doe
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: RESOURCE_NOT_FOUND
+        message:
+          type: string
+          example: User with given ID was not found

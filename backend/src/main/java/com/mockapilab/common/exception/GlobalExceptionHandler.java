@@ -1,6 +1,7 @@
 package com.mockapilab.common.exception;
 
 import com.mockapilab.common.api.ApiResponse;
+import com.mockapilab.modules.contract.validation.ContractValidationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -33,6 +34,12 @@ public class GlobalExceptionHandler {
         }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ApiResponse.error("Validation failed", errors));
+    }
+
+    @ExceptionHandler(ContractValidationException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleContractValidationException(ContractValidationException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error(ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
