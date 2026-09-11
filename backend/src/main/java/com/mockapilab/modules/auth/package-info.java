@@ -1,7 +1,7 @@
 /**
  * Authentication and authorization module.
  * <p>
- * Planned responsibility: User management, API key issuance, role-based access control (RBAC).
- * Scheduled for implementation in subsequent milestones.
+ * Provides user registration, BCrypt credential hashing, stateless JWT issuance/validation,
+ * and Spring Security filter chain integration for MockAPILab.
  */
 package com.mockapilab.modules.auth;

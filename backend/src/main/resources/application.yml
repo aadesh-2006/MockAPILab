@@ -8,6 +8,27 @@ spring:
     name: mockapilab-backend
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:mockapilab}}
+    username: ${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:mockapilab_user}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:mockapilab_password}}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+mockapilab:
+  jwt:
+    secret: ${JWT_SECRET:mockapilab-default-development-secret-key-must-be-at-least-256-bits-long-for-hmac-sha}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 
 management:
   endpoints:

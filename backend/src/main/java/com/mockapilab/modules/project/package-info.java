@@ -1,7 +1,7 @@
 /**
  * Project and workspace management module.
  * <p>
- * Planned responsibility: Project metadata, workspace boundaries, environment isolation.
- * Scheduled for implementation in subsequent milestones.
+ * Manages developer workspace boundaries, metadata, and strict owner-based resource isolation
+ * for API contracts, mocks, and scenarios.
  */
 package com.mockapilab.modules.project;
