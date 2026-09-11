@@ -1,0 +1,24 @@
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: mockapilab-backend
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    com.mockapilab: DEBUG
