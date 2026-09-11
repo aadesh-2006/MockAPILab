@@ -20,8 +20,29 @@ public record NormalizedSchema(
         Map<String, NormalizedSchema> properties,
         List<String> requiredProperties,
         NormalizedSchema items,
-        String ref
+        String ref,
+        Double minimum,
+        Double maximum,
+        Integer minLength,
+        Integer maxLength,
+        String pattern
 ) {
+    public NormalizedSchema(
+            String type,
+            String format,
+            String description,
+            Boolean nullable,
+            Object defaultValue,
+            Object example,
+            List<String> enumConstants,
+            Map<String, NormalizedSchema> properties,
+            List<String> requiredProperties,
+            NormalizedSchema items,
+            String ref
+    ) {
+        this(type, format, description, nullable, defaultValue, example, enumConstants, properties, requiredProperties, items, ref, null, null, null, null, null);
+    }
+
     public static NormalizedSchema string(String format, String description) {
         return new NormalizedSchema("string", format, description, false, null, null, null, null, null, null, null);
     }

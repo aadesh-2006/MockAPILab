@@ -2,6 +2,8 @@ package com.mockapilab.modules.runtime.controller;
 
 import com.mockapilab.common.api.ApiResponse;
 import com.mockapilab.modules.auth.security.UserPrincipal;
+import com.mockapilab.modules.runtime.dto.GenerateDataRequest;
+import com.mockapilab.modules.runtime.dto.GenerateDataResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeStatusResponse;
 import com.mockapilab.modules.runtime.dto.StartRuntimeRequest;
@@ -25,11 +27,11 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Controller exposing endpoints for managing mock runtime server lifecycles.
+ * Controller exposing endpoints for managing mock runtime server lifecycles and realistic data generation.
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")
-@Tag(name = "Mock Runtimes", description = "Dynamic mock runtime lifecycle management")
+@Tag(name = "Mock Runtimes", description = "Dynamic mock runtime lifecycle and deterministic data generation")
 @SecurityRequirement(name = "bearerAuth")
 public class RuntimeController {
 
@@ -83,6 +85,19 @@ public class RuntimeController {
     ) {
         RuntimeStatusResponse response = runtimeService.getRuntimeStatus(projectId, runtimeId, principal.getId());
         return ResponseEntity.ok(ApiResponse.success("Runtime status retrieved successfully", response));
+    }
+
+    @PostMapping("/runtimes/{runtimeId}/data/generate")
+    @Operation(summary = "Generate Mock Collection Data", description = "Generates realistic, deterministic mock entities for a specific collection and populates the runtime state store.")
+    public ResponseEntity<ApiResponse<GenerateDataResponse>> generateMockData(
+            @PathVariable UUID projectId,
+            @PathVariable UUID runtimeId,
+            @Valid @RequestBody GenerateDataRequest request,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        GenerateDataResponse response = runtimeService.generateMockData(projectId, runtimeId, request, principal.getId());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success("Mock collection data generated successfully", response));
     }
 
     @PostMapping("/runtimes/{runtimeId}/stop")

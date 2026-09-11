@@ -193,10 +193,6 @@ public class MockRequestDispatcher {
             }
 
             case COLLECTION_LIST -> {
-                if (!stateStore.hasCollection(runtimeId, collectionPath)) {
-                    // Seed with initial mock item from response schema if empty
-                    seedCollectionIfPossible(runtimeId, collectionPath, route.getEndpoint(), instance.contract());
-                }
                 List<Map<String, Object>> collection = stateStore.getCollection(runtimeId, collectionPath);
                 int statusCode = resolveStatusCode(route.getEndpoint(), "200", HttpStatus.OK.value());
                 return ResponseEntity.status(statusCode).contentType(MediaType.APPLICATION_JSON).body(collection);
@@ -209,14 +205,6 @@ public class MockRequestDispatcher {
                 }
 
                 Optional<Map<String, Object>> entityOpt = stateStore.getEntity(runtimeId, collectionPath, entityId);
-                if (entityOpt.isEmpty()) {
-                    // If collection hasn't been modified and entityId == 1 or sample, try seeding and looking up
-                    if (!stateStore.hasCollection(runtimeId, collectionPath)) {
-                        seedCollectionIfPossible(runtimeId, collectionPath, route.getEndpoint(), instance.contract());
-                        entityOpt = stateStore.getEntity(runtimeId, collectionPath, entityId);
-                    }
-                }
-
                 if (entityOpt.isPresent()) {
                     int statusCode = resolveStatusCode(route.getEndpoint(), "200", HttpStatus.OK.value());
                     return ResponseEntity.status(statusCode).contentType(MediaType.APPLICATION_JSON).body(entityOpt.get());
@@ -236,12 +224,6 @@ public class MockRequestDispatcher {
                 }
 
                 Optional<Map<String, Object>> existing = stateStore.getEntity(runtimeId, collectionPath, entityId);
-                if (existing.isEmpty() && !stateStore.hasCollection(runtimeId, collectionPath)) {
-                    // Pre-seed if needed
-                    seedCollectionIfPossible(runtimeId, collectionPath, route.getEndpoint(), instance.contract());
-                    existing = stateStore.getEntity(runtimeId, collectionPath, entityId);
-                }
-
                 if (existing.isEmpty()) {
                     Map<String, Object> notFound = Map.of(
                             "status", HttpStatus.NOT_FOUND.value(),
@@ -294,24 +276,6 @@ public class MockRequestDispatcher {
         }
 
         return ResponseEntity.ok().build();
-    }
-
-    @SuppressWarnings("unchecked")
-    private void seedCollectionIfPossible(UUID runtimeId, String collectionPath, NormalizedEndpoint endpoint, NormalizedContract contract) {
-        Object generated = responseGenerator.generateResponsePayload(endpoint, "200", contract);
-        if (generated instanceof List<?> list) {
-            List<Map<String, Object>> seedItems = new java.util.ArrayList<>();
-            for (Object item : list) {
-                if (item instanceof Map<?, ?> map) {
-                    seedItems.add((Map<String, Object>) map);
-                }
-            }
-            stateStore.initializeCollection(runtimeId, collectionPath, seedItems);
-        } else if (generated instanceof Map<?, ?> map) {
-            stateStore.initializeCollection(runtimeId, collectionPath, List.of((Map<String, Object>) map));
-        } else {
-            stateStore.initializeCollection(runtimeId, collectionPath, Collections.emptyList());
-        }
     }
 
     private String extractOrGenerateId(Map<String, Object> entity, String idFieldName) {

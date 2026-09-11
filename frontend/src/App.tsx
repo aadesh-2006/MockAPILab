@@ -30,6 +30,12 @@ paths:
       responses:
         '200':
           description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
     post:
       summary: Create user
       requestBody:
@@ -37,29 +43,69 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-                email:
-                  type: string
-                  format: email
+              $ref: '#/components/schemas/UserInput'
       responses:
         '201':
           description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
   /users/{id}:
     get:
       summary: Get user by ID
       responses:
         '200':
           description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
     delete:
       summary: Delete user
       responses:
         '204':
-          description: User deleted`)
+          description: User deleted
+components:
+  schemas:
+    UserInput:
+      type: object
+      required:
+        - name
+        - email
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        role:
+          type: string
+          enum:
+            - ADMIN
+            - USER
+            - MANAGER
+    User:
+      type: object
+      required:
+        - id
+        - name
+        - email
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        role:
+          type: string`)
   const [ingestStatus, setIngestStatus] = useState<string | null>(null)
   const [ingestLoading, setIngestLoading] = useState(false)
   const [ingestedContractId, setIngestedContractId] = useState<string | null>(null)
@@ -69,10 +115,17 @@ paths:
   const [runtimeStatus, setRuntimeStatus] = useState<string | null>(null)
   const [runtimeLoading, setRuntimeLoading] = useState(false)
 
+  // Data Generation State (M5)
+  const [genCollection, setGenCollection] = useState('/users')
+  const [genCount, setGenCount] = useState(5)
+  const [genSeed, setGenSeed] = useState('42')
+  const [genStatus, setGenStatus] = useState<string | null>(null)
+  const [genLoading, setGenLoading] = useState(false)
+
   // Live Mock Dispatch Tester State
   const [mockPath, setMockPath] = useState('/users')
   const [mockMethod, setMockMethod] = useState('GET')
-  const [mockBody, setMockBody] = useState('{\n  "name": "Jane Doe",\n  "email": "jane@example.com"\n}')
+  const [mockBody, setMockBody] = useState('{\n  "name": "Priya Sharma",\n  "email": "priya.sharma@example.com",\n  "phone": "+91-9876543210",\n  "role": "ADMIN"\n}')
   const [mockResponse, setMockResponse] = useState<string | null>(null)
   const [mockLoading, setMockLoading] = useState(false)
 
@@ -177,6 +230,52 @@ paths:
     }
   }
 
+  const handleGenerateData = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !runtimeId || !genCollection) {
+      setGenStatus('Please provide Project ID, Runtime ID, and Collection path.')
+      return
+    }
+
+    setGenLoading(true)
+    setGenStatus(null)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+
+      const payload: { collection: string; count: number; seed?: number } = {
+        collection: genCollection,
+        count: genCount,
+      }
+      if (genSeed && genSeed.trim() !== '') {
+        payload.seed = parseInt(genSeed.trim(), 10)
+      }
+
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/runtimes/${runtimeId.trim()}/data/generate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      })
+
+      const data = await res.json()
+      if (res.ok) {
+        setGenStatus(`Success: Generated ${data.data.generatedCount} entities in "${data.data.collection}" (Effective Seed: ${data.data.seed})`)
+      } else {
+        setGenStatus(`Error (${res.status}): ${data.message || JSON.stringify(data.data)}`)
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setGenStatus(`Network Error: ${errorMessage}`)
+    } finally {
+      setGenLoading(false)
+    }
+  }
+
   const handleSendMockRequest = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!runtimeId) {
@@ -224,10 +323,10 @@ paths:
   return (
     <main className="container">
       <header className="header">
-        <div className="badge">Milestone 4 • Stateful Mock Runtime Engine</div>
+        <div className="badge">Milestone 5 • Realistic Deterministic Data Engine</div>
         <h1>MockAPILab</h1>
         <p className="subtitle">
-          Intelligent, stateful mock backend engine for modern frontend &amp; full-stack development.
+          Intelligent, stateful mock backend engine with reproducible schema-driven realistic data generation.
         </p>
       </header>
 
@@ -256,9 +355,9 @@ paths:
             <li><strong>Core:</strong> Java 21 + Spring Boot (Modular Monolith)</li>
             <li><strong>Contract Engine:</strong> OpenAPI 3.x Parser $\rightarrow$ Normalized Contract Model</li>
             <li><strong>Mock Runtime:</strong> Stateful in-process runtime (/mock/&#123;runtimeId&#125;/**)</li>
-            <li><strong>Isolation:</strong> Thread-safe In-Memory State Store per Runtime</li>
+            <li><strong>Data Engine:</strong> Seedable PRNG, Schema Constraints &amp; Curated Realistic Data</li>
+            <li><strong>Explicit Population:</strong> No silent state mutations on GET requests</li>
             <li><strong>Security:</strong> Stateless JWT for Management, Public for Mock Gateways</li>
-            <li><strong>Database:</strong> PostgreSQL 16 + Flyway V1-V3 (JSONB Snapshots)</li>
           </ul>
         </div>
       </section>
@@ -355,9 +454,62 @@ paths:
       </section>
 
       <section className="card ingest-card">
-        <h2>3. Live Mock Request Dispatcher Tester</h2>
+        <h2>3. Realistic Mock Data Generation (M5 Engine)</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
-          Execute public HTTP calls directly against <code>/mock/&#123;runtimeId&#125;</code> and observe real stateful responses.
+          Explicitly populate the runtime collection with reproducible, schema-aware realistic mock data.
+        </p>
+
+        <form onSubmit={handleGenerateData} className="ingest-form">
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label htmlFor="genCollection">Collection Path:</label>
+              <input
+                id="genCollection"
+                type="text"
+                placeholder="/users"
+                value={genCollection}
+                onChange={(e) => setGenCollection(e.target.value)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="genCount">Count (1-100):</label>
+              <input
+                id="genCount"
+                type="number"
+                min={1}
+                max={100}
+                value={genCount}
+                onChange={(e) => setGenCount(parseInt(e.target.value, 10) || 1)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="genSeed">Seed (Optional):</label>
+              <input
+                id="genSeed"
+                type="text"
+                placeholder="42 (or blank for auto)"
+                value={genSeed}
+                onChange={(e) => setGenSeed(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <button type="submit" disabled={genLoading || !runtimeId} className="submit-btn">
+            {genLoading ? 'Generating Mock Data...' : 'Generate Mock Data'}
+          </button>
+        </form>
+
+        {genStatus && (
+          <div className={`status-box ${genStatus.startsWith('Success') ? 'success' : 'alert'}`}>
+            {genStatus}
+          </div>
+        )}
+      </section>
+
+      <section className="card ingest-card">
+        <h2>4. Live Mock Request Dispatcher Tester</h2>
+        <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
+          Execute public HTTP calls directly against <code>/mock/&#123;runtimeId&#125;</code> and observe stateful responses.
         </p>
 
         <form onSubmit={handleSendMockRequest} className="ingest-form">

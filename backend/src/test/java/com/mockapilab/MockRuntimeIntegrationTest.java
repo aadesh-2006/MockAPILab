@@ -10,6 +10,7 @@ import com.mockapilab.modules.contract.repository.ContractRepository;
 import com.mockapilab.modules.contract.repository.ContractVersionRepository;
 import com.mockapilab.modules.project.dto.CreateProjectRequest;
 import com.mockapilab.modules.project.repository.ProjectRepository;
+import com.mockapilab.modules.runtime.dto.GenerateDataRequest;
 import com.mockapilab.modules.runtime.dto.StartRuntimeRequest;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
@@ -283,7 +284,26 @@ class MockRuntimeIntegrationTest {
     }
 
     @Test
-    @DisplayName("26, 27, 28, 29. Full stateful mock lifecycle: POST creates, GET returns, PUT updates, DELETE removes, GET by id returns 404")
+    @DisplayName("26. GET /collection on empty state returns [] and does NOT mutate state")
+    void testEmptyGetCollectionReturnsEmptyListWithoutMutatingState() throws Exception {
+        String token = registerAndGetToken("empty@runtime.com", "Password123!", "Empty");
+        String projectId = createProject(token, "Empty Project");
+        String contractId = ingestContract(token, projectId, "Pet Contract", PET_STORE_OPENAPI);
+        String runtimeId = startRuntime(token, projectId, contractId, 1);
+
+        String mockUrl = "/mock/" + runtimeId + "/pets";
+
+        // GET /pets on empty collection returns empty list []
+        mockMvc.perform(get(mockUrl))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+
+        // Ensure state store entity count is strictly 0
+        assertThat(stateStore.getEntityCount(UUID.fromString(runtimeId))).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("27, 28, 29. Full stateful mock lifecycle: POST creates, GET returns, PUT updates, DELETE removes, GET by id returns 404")
     void testStatefulMockCrudOperations() throws Exception {
         String token = registerAndGetToken("bob@runtime.com", "Password123!", "Bob");
         String projectId = createProject(token, "Pet Backend");
@@ -314,8 +334,9 @@ class MockRuntimeIntegrationTest {
         // 2. GET /pets -> list contains our created pet
         mockMvc.perform(get(mockUrl))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(greaterThanOrEqualTo(1))))
-                .andExpect(jsonPath("$[?(@.id == '" + petId + "')].name").value("Fido"));
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id", is(petId)))
+                .andExpect(jsonPath("$[0].name", is("Fido")));
 
         // 3. GET /pets/{petId} -> returns exact pet
         mockMvc.perform(get(mockUrl + "/" + petId))
@@ -343,7 +364,7 @@ class MockRuntimeIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("SOLD")));
 
-        // 6. DELETE /pets/{petId} -> returns 204 or 200
+        // 6. DELETE /pets/{petId} -> returns 204
         mockMvc.perform(delete(mockUrl + "/" + petId))
                 .andExpect(status().isNoContent());
 
@@ -392,7 +413,57 @@ class MockRuntimeIntegrationTest {
     }
 
     @Test
-    @DisplayName("31. Runtime Isolation: Two runtimes on the same contract maintain isolated in-memory state")
+    @DisplayName("31. Explicit mock data generation endpoint generates entities and populates state")
+    void testExplicitMockDataGenerationEndpoint() throws Exception {
+        String token = registerAndGetToken("generator@runtime.com", "Password123!", "Gen");
+        String projectId = createProject(token, "Gen Project");
+        String contractId = ingestContract(token, projectId, "Pet Contract", PET_STORE_OPENAPI);
+        String runtimeId = startRuntime(token, projectId, contractId, 1);
+
+        // 1. Initial GET /pets is empty []
+        mockMvc.perform(get("/mock/" + runtimeId + "/pets"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+
+        // 2. Call explicit generation endpoint with seed 42
+        GenerateDataRequest genReq = new GenerateDataRequest("/pets", 5, 42L);
+        mockMvc.perform(post("/api/v1/projects/" + projectId + "/runtimes/" + runtimeId + "/data/generate")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(genReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.runtimeId", is(runtimeId)))
+                .andExpect(jsonPath("$.data.collection", is("/pets")))
+                .andExpect(jsonPath("$.data.generatedCount", is(5)))
+                .andExpect(jsonPath("$.data.seed", is(42)));
+
+        // 3. Subsequent GET /pets now returns 5 entities
+        MvcResult getResult = mockMvc.perform(get("/mock/" + runtimeId + "/pets"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(5)))
+                .andExpect(jsonPath("$[0].id", notNullValue()))
+                .andExpect(jsonPath("$[0].name", notNullValue()))
+                .andReturn();
+
+        // 4. Test unseeded generation returns effective generated seed
+        GenerateDataRequest unseededReq = new GenerateDataRequest("/pets", 3, null);
+        MvcResult unseededResult = mockMvc.perform(post("/api/v1/projects/" + projectId + "/runtimes/" + runtimeId + "/data/generate")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(unseededReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.generatedCount", is(3)))
+                .andExpect(jsonPath("$.data.seed", notNullValue()))
+                .andReturn();
+
+        JsonNode unseededNode = objectMapper.readTree(unseededResult.getResponse().getContentAsString());
+        long returnedSeed = unseededNode.path("data").path("seed").asLong();
+        assertThat(returnedSeed).isNotZero();
+    }
+
+    @Test
+    @DisplayName("32. Runtime Isolation: Two runtimes on the same contract maintain isolated in-memory state")
     void testRuntimeStateIsolation() throws Exception {
         String token = registerAndGetToken("isolation@runtime.com", "Password123!", "Iso");
         String projectId = createProject(token, "Iso Project");
@@ -427,7 +498,7 @@ class MockRuntimeIntegrationTest {
     }
 
     @Test
-    @DisplayName("32. Method Not Allowed and Route Not Found handling")
+    @DisplayName("33. Method Not Allowed and Route Not Found handling")
     void testMethodNotAllowedAndNotFound() throws Exception {
         String token = registerAndGetToken("routes@runtime.com", "Password123!", "Route");
         String projectId = createProject(token, "Route Project");
@@ -448,7 +519,7 @@ class MockRuntimeIntegrationTest {
     }
 
     @Test
-    @DisplayName("33. Stop and Delete Runtime Lifecycle Operations")
+    @DisplayName("34. Stop and Delete Runtime Lifecycle Operations")
     void testStopAndDeleteRuntime() throws Exception {
         String token = registerAndGetToken("lifecycle@runtime.com", "Password123!", "Life");
         String projectId = createProject(token, "Life Project");

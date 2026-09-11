@@ -254,6 +254,12 @@ public class OpenApiContractParser {
             items = normalizeSchema(schema.getItems());
         }
 
+        Double minimum = schema.getMinimum() != null ? schema.getMinimum().doubleValue() : null;
+        Double maximum = schema.getMaximum() != null ? schema.getMaximum().doubleValue() : null;
+        Integer minLength = schema.getMinLength();
+        Integer maxLength = schema.getMaxLength();
+        String pattern = schema.getPattern();
+
         return new NormalizedSchema(
                 type,
                 format,
@@ -265,7 +271,12 @@ public class OpenApiContractParser {
                 properties,
                 requiredProperties,
                 items,
-                null
+                null,
+                minimum,
+                maximum,
+                minLength,
+                maxLength,
+                pattern
         );
     }
 

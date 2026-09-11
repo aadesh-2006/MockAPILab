@@ -5,10 +5,15 @@ import com.mockapilab.common.exception.ResourceNotFoundException;
 import com.mockapilab.modules.contract.model.Contract;
 import com.mockapilab.modules.contract.model.ContractVersion;
 import com.mockapilab.modules.contract.model.normalized.NormalizedContract;
+import com.mockapilab.modules.contract.model.normalized.NormalizedEndpoint;
+import com.mockapilab.modules.contract.model.normalized.NormalizedResponse;
+import com.mockapilab.modules.contract.model.normalized.NormalizedSchema;
 import com.mockapilab.modules.contract.repository.ContractRepository;
 import com.mockapilab.modules.contract.repository.ContractVersionRepository;
 import com.mockapilab.modules.project.model.Project;
 import com.mockapilab.modules.project.repository.ProjectRepository;
+import com.mockapilab.modules.runtime.dto.GenerateDataRequest;
+import com.mockapilab.modules.runtime.dto.GenerateDataResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeStatusResponse;
 import com.mockapilab.modules.runtime.dto.StartRuntimeRequest;
@@ -16,6 +21,7 @@ import com.mockapilab.modules.runtime.engine.CompiledRoute;
 import com.mockapilab.modules.runtime.engine.RouteCompiler;
 import com.mockapilab.modules.runtime.engine.RuntimeInstance;
 import com.mockapilab.modules.runtime.engine.RuntimeRegistry;
+import com.mockapilab.modules.runtime.generation.MockDataGenerator;
 import com.mockapilab.modules.runtime.model.MockRuntime;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
@@ -25,11 +31,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Service managing lifecycle operations for dynamic mock runtimes.
+ * Service managing lifecycle operations and explicit data generation for dynamic mock runtimes.
  */
 @Service
 public class RuntimeService {
@@ -41,6 +49,7 @@ public class RuntimeService {
     private final RuntimeRegistry runtimeRegistry;
     private final RuntimeStateStore stateStore;
     private final RouteCompiler routeCompiler;
+    private final MockDataGenerator mockDataGenerator;
 
     public RuntimeService(
             MockRuntimeRepository runtimeRepository,
@@ -49,7 +58,8 @@ public class RuntimeService {
             ContractVersionRepository contractVersionRepository,
             RuntimeRegistry runtimeRegistry,
             RuntimeStateStore stateStore,
-            RouteCompiler routeCompiler
+            RouteCompiler routeCompiler,
+            MockDataGenerator mockDataGenerator
     ) {
         this.runtimeRepository = runtimeRepository;
         this.projectRepository = projectRepository;
@@ -58,6 +68,7 @@ public class RuntimeService {
         this.runtimeRegistry = runtimeRegistry;
         this.stateStore = stateStore;
         this.routeCompiler = routeCompiler;
+        this.mockDataGenerator = mockDataGenerator;
     }
 
     @Transactional
@@ -144,6 +155,36 @@ public class RuntimeService {
     }
 
     @Transactional
+    public GenerateDataResponse generateMockData(UUID projectId, UUID runtimeId, GenerateDataRequest request, UUID currentUserId) {
+        verifyProjectOwnership(projectId, currentUserId);
+
+        MockRuntime runtime = runtimeRepository.findByIdAndProjectId(runtimeId, projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Runtime not found with id: " + runtimeId));
+
+        if (runtime.getStatus() != MockRuntimeStatus.RUNNING) {
+            throw new IllegalStateException("Cannot generate mock data: Runtime is not in RUNNING status (current status: " + runtime.getStatus() + ")");
+        }
+
+        long effectiveSeed = request.seed() != null ? request.seed() : (System.currentTimeMillis() ^ (long) (Math.random() * 1000000L));
+        int count = request.getEffectiveCount();
+        String rawCollection = request.collection();
+        String normalizedCollection = normalizeCollectionPath(rawCollection);
+
+        NormalizedContract contract = runtime.getContractVersion().getNormalizedDefinition();
+        NormalizedSchema itemSchema = resolveItemSchemaForCollection(contract, normalizedCollection);
+
+        List<Map<String, Object>> entities = mockDataGenerator.generateCollection(itemSchema, count, effectiveSeed, contract);
+        stateStore.initializeCollection(runtimeId, normalizedCollection, entities);
+
+        return new GenerateDataResponse(
+                runtimeId,
+                normalizedCollection,
+                entities.size(),
+                effectiveSeed
+        );
+    }
+
+    @Transactional
     public RuntimeResponse stopRuntime(UUID projectId, UUID runtimeId, UUID currentUserId) {
         verifyProjectOwnership(projectId, currentUserId);
 
@@ -169,6 +210,71 @@ public class RuntimeService {
         runtimeRegistry.unregister(runtimeId);
         stateStore.clearRuntime(runtimeId);
         runtimeRepository.delete(runtime);
+    }
+
+    private NormalizedSchema resolveItemSchemaForCollection(NormalizedContract contract, String collectionPath) {
+        if (contract == null) {
+            return NormalizedSchema.object(Collections.emptyMap(), Collections.emptyList(), "Generic Object");
+        }
+
+        // 1. Check matching endpoints (e.g. POST /pets requestBody or GET /pets response schema)
+        if (contract.endpoints() != null) {
+            for (NormalizedEndpoint ep : contract.endpoints()) {
+                String epPath = normalizeCollectionPath(ep.path());
+                if (epPath.equalsIgnoreCase(collectionPath)) {
+                    if ("POST".equalsIgnoreCase(ep.method()) && ep.requestBody() != null && ep.requestBody().contentTypes() != null) {
+                        for (var mt : ep.requestBody().contentTypes().values()) {
+                            if (mt.schema() != null) {
+                                return mt.schema();
+                            }
+                        }
+                    }
+                    if ("GET".equalsIgnoreCase(ep.method()) && ep.responses() != null) {
+                        for (NormalizedResponse resp : ep.responses()) {
+                            if (resp.statusCode() != null && resp.statusCode().startsWith("2") && resp.contentTypes() != null) {
+                                for (var mt : resp.contentTypes().values()) {
+                                    if (mt.schema() != null) {
+                                        if ("array".equalsIgnoreCase(mt.schema().type()) && mt.schema().items() != null) {
+                                            return mt.schema().items();
+                                        }
+                                        return mt.schema();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check schemas map for matching entity name (e.g. /pets -> Pet or pets)
+        String singular = collectionPath.replaceAll("^/", "");
+        if (singular.endsWith("s") && singular.length() > 1) {
+            singular = singular.substring(0, singular.length() - 1);
+        }
+        if (contract.schemas() != null) {
+            for (Map.Entry<String, NormalizedSchema> entry : contract.schemas().entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(singular) || entry.getKey().equalsIgnoreCase(collectionPath.replaceAll("^/", ""))) {
+                    return entry.getValue();
+                }
+            }
+        }
+
+        return NormalizedSchema.object(Collections.emptyMap(), Collections.emptyList(), "Generic Entity");
+    }
+
+    private String normalizeCollectionPath(String path) {
+        if (path == null || path.isBlank()) {
+            return "/";
+        }
+        String p = path.trim();
+        if (!p.startsWith("/")) {
+            p = "/" + p;
+        }
+        if (p.length() > 1 && p.endsWith("/")) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p;
     }
 
     private RuntimeResponse mapToResponse(MockRuntime runtime) {

@@ -8,6 +8,7 @@
 [![Database](https://img.shields.io/badge/database-PostgreSQL%2016%20%7C%20JSONB%20%7C%20Flyway-blue.svg)](backend/src/main/resources/db/migration/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
 [![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
+[![Data Engine](https://img.shields.io/badge/Data%20Engine-Deterministic%20Realistic%20Generator-teal.svg)](backend/src/main/java/com/mockapilab/modules/runtime/generation/)
 
 ---
 
@@ -15,7 +16,12 @@
 
 **MockAPILab** is a developer productivity platform that transforms API contracts, OpenAPI specifications, or backend controller/model definitions into a locally runnable, realistic, and **stateful** mock backend. 
 
-Unlike traditional static mock servers that only return fixed JSON snippets, MockAPILab maintains contextual in-memory state, executes multi-step REST CRUD lifecycles (e.g., `POST` $\rightarrow$ `GET collection` $\rightarrow$ `GET item` $\rightarrow$ `PUT` $\rightarrow$ `DELETE` $\rightarrow$ `404`), validates incoming request bodies against schema rules, and isolates state per runtime instance.
+Unlike traditional static mock servers that only return fixed JSON fixtures, MockAPILab:
+- Maintains contextual in-memory state.
+- Executes realistic multi-step REST CRUD lifecycles (`POST` $\rightarrow$ `GET collection` $\rightarrow$ `GET item` $\rightarrow$ `PUT` $\rightarrow$ `DELETE` $\rightarrow$ `404`).
+- Generates **realistic, schema-aware, deterministic mock data** (names, emails, India-friendly phones, companies, timestamps, addresses) governed by seed reproducibility.
+- Enforces strict request body validation (rejecting invalid schemas with `400 Bad Request`).
+- Provides isolated state spaces per runtime instance without silent mutations on read operations.
 
 ---
 
@@ -26,9 +32,9 @@ Modern development teams frequently face blocking dependencies between frontend 
 - **Backend Bottlenecks:** Frontend teams are delayed waiting for backend APIs to be designed, deployed, and stabilized.
 - **Unrealistic Static Mocks:** Existing mocking tools return static, stateless fixtures. They fail to test real-world scenarios such as entity mutation, schema validation failures, or resource lifecycles.
 - **Contract Drift:** Hand-written mock configurations drift rapidly from changing backend specifications.
-- **Manual Overhead:** Writing mock routes and state machines by hand is tedious and error-prone.
+- **Manual Data Seeding:** Crafting realistic mock datasets manually is tedious and non-reproducible.
 
-**MockAPILab bridges this gap** by compiling ingested contracts into dynamic in-process mock backends with stateful CRUD semantics and zero configuration.
+**MockAPILab bridges this gap** by compiling ingested contracts into dynamic in-process mock backends with stateful CRUD semantics and deterministic data generation.
 
 ---
 
@@ -39,7 +45,7 @@ MockAPILab is built as a clean **Modular Monolith** designed for high throughput
 ```mermaid
 flowchart TD
     subgraph Client ["Client Layer"]
-        UI["React + TypeScript UI\n(Management & Scenario Studio)"]
+        UI["React + TypeScript UI\n(Management & Mock Studio)"]
         DevApp["Frontend App Under Dev\n(Calling Mock Endpoints)"]
     end
 
@@ -49,70 +55,63 @@ flowchart TD
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser & Normalizer)"]
         RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
+        DataEngine["Realistic Deterministic Data Engine\n(Seedable PRNG & Schema Evaluator)"]
         StateStore["Thread-Safe RuntimeStateStore"]
         AILayer["Contract Extractor (Gemini API) (Future)"]
     end
 
     subgraph Infrastructure ["Infrastructure Layer"]
         PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB, Runtimes)")]
-        Redis[("Redis 7\n(Stateful Mock State & Caching) (Future)")]
-        Kafka[("Apache Kafka\n(Event Stream & Telemetry) (Future)")]
     end
 
-    UI -->|Authenticate, Manage Projects, Ingest Contracts, Launch Mocks| API
+    UI -->|Authenticate, Manage Projects, Ingest Contracts, Launch Mocks, Generate Data| API
     DevApp -->|Execute Public Mock Requests| RuntimeEngine
     API --> AuthModule
     API --> ProjectModule
     API --> ContractModule
     API --> RuntimeEngine
+    API --> DataEngine
+    DataEngine --> StateStore
     ContractModule --> PG
     ProjectModule --> PG
     AuthModule --> PG
     RuntimeEngine --> PG
     RuntimeEngine --> StateStore
-    AILayer -.->|Infers Schemas| ContractModule
 ```
 
 ---
 
-## 4. Stateful Mock Runtime Engine (Milestone 4)
+## 4. Realistic Deterministic Data Engine (Milestone 5)
 
-MockAPILab provides an in-process, high-throughput dynamic mock execution gateway:
+MockAPILab features a dedicated schema-aware mock data generator (`com.mockapilab.modules.runtime.generation`):
 
 ```
-                          +------------------------+
-                          ¦   NormalizedContract   ¦
-                          +------------------------+
-                                      ¦ RouteCompiler
-                                      ?
-                          +------------------------+
-                          ¦     CompiledRoutes     ¦
-                          +------------------------+
-                                      ¦
-HTTP Request --> /mock/{runtimeId}/** ¦ (No JWT required)
-                                      ?
-                          +------------------------+
-                          ¦  MockRequestDispatcher ¦
-                          +------------------------+
-                                ¦            ¦
-            Schema Validation --¦            +-- State Store Mutation
-            (MockRequestValidator)           ¦   (RuntimeStateStore)
-                                             ?
-                                  [201 Created / 200 OK / 404]
+                       +-------------------------+
+                       ¦    NormalizedSchema     ¦
+                       +-------------------------+
+                                    ¦
+                                    ?
+                       +-------------------------+
+                       ¦   SchemaDataGenerator   ¦
+                       +-------------------------+
+                              ¦            ¦
+  Evaluation Hierarchy:       ¦            ¦
+  1. Explicit Example         ?            ?
+  2. Default Value       [StringGen]   [NumberGen]  [DateTimeGen]  [CollectionGen]
+  3. Enum Constants      (Names,       (min/max,    (ISO-8601,     (Nested Objects,
+  4. Seed-based Type      Phones,       prices,      dates)         Arrays)
+     Generation           Emails)       ages)
+                              ¦
+                              ?
+                 [Deterministic Mock Output]
 ```
 
 ### Key Capabilities
-- **Public Dynamic Gateway:** Accepts requests under `/mock/{runtimeId}/**` without requiring JWT authentication.
-- **Route Compilation:** Compiles paths (e.g. `/pets/{petId}`, `/users/{userId}/orders/{orderId}`) into regex matchers with specificity ordering.
-- **Request Validation:** Enforces required fields, primitive types, and enum constants against `NormalizedSchema`, returning structured `400 Bad Request` upon failure.
-- **Stateful REST Operations:**
-  - `POST /collection`: Generates/preserves ID, inserts entity into runtime state, returns `201 Created`.
-  - `GET /collection`: Returns list of stored entities (with automatic schema-driven mock seeding if empty).
-  - `GET /collection/{id}`: Looks up entity by ID, returns `200 OK` or `404 Not Found`.
-  - `PUT/PATCH /collection/{id}`: Merges/updates stored entity, returns `200 OK` or `404 Not Found`.
-  - `DELETE /collection/{id}`: Removes entity, returns `204 No Content` / `200 OK`; subsequent `GET` returns `404`.
-  - `Generic / RPC endpoints`: Returns deterministic mock response conforming to `NormalizedResponse`.
-- **Runtime State Isolation:** Thread-safe state store partitioned by `runtimeId`. Two runtimes created from the same contract never share state.
+- **Strict Reproducibility:** The same seed + schema + property path always produces identical mock data across test runs.
+- **Seed Transparency:** If no seed is provided, a seed is generated once and returned in the API response for exact replayability.
+- **Curated Realistic Datasets:** Human names, matching email domains, India-friendly formatted phone numbers (`+91-XXXXXXXXXX`), company names, addresses, and cities.
+- **Constraint-Aware:** Respects `minimum`, `maximum`, `minLength`, and `maxLength` constraints.
+- **Explicit Population API:** `POST /api/v1/projects/{projectId}/runtimes/{runtimeId}/data/generate` explicitly populates collections without silent state mutations on `GET` requests.
 
 ---
 
@@ -140,6 +139,7 @@ HTTP Request --> /mock/{runtimeId}/** ¦ (No JWT required)
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes` | Protected | List all mock runtimes in project |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Get runtime details and status |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/status` | Protected | Get live runtime statistics, entities count & uptime |
+| **Data Gen** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/data/generate` | Protected | **Generate realistic deterministic collection data** |
 | **Runtimes** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/stop` | Protected | Stop active mock runtime |
 | **Runtimes** | `DELETE` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Stop, clear state, and delete runtime |
 | **Mock Gateway** | `ALL` | `/mock/{runtimeId}/**` | **Public** | **Execute dynamic stateful mock API calls** |
@@ -154,11 +154,12 @@ HTTP Request --> /mock/{runtimeId}/** ¦ (No JWT required)
 | **Security & Auth** | Spring Security 6, JJWT 0.12, BCrypt | Stateless JWT authentication, role & ownership authorization |
 | **Contract Engine** | SwaggerParser 2.1, Jackson YAML, SpringDoc OpenAPI | OpenAPI 3.x parser, validation, schema normalizer, Swagger UI |
 | **Mock Runtime** | Dynamic Regex Compiler, Schema Validator | Stateful REST simulation, isolated in-memory store |
+| **Data Engine** | Seedable PRNG, Curated Reference Sets | Deterministic realistic data generation engine |
 | **Database & ORM** | PostgreSQL 16, Spring Data JPA, Hibernate (JSONB) | Relational persistence + JSONB normalized contract snapshots |
 | **Schema Migrations**| Flyway Migration Engine | Deterministic, version-controlled database migrations (`V1`, `V2`, `V3`) |
 | **Frontend** | React 18, TypeScript, Vite | Developer dashboard, contract ingestion, runtime control & mock tester |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (41 tests) |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (52 tests) |
 
 ---
 
@@ -189,8 +190,16 @@ HTTP Request --> /mock/{runtimeId}/** ¦ (No JWT required)
 - [x] Built full stateful CRUD semantics (POST creates, GET lists, GET by ID retrieves, PUT updates, DELETE removes and produces 404).
 - [x] Built public `/mock/{runtimeId}/**` gateway allowing unauthenticated mock traffic.
 - [x] Built runtime management APIs (`/runtime`, `/status`, `/stop`, `DELETE`) with owner verification.
-- [x] Integrated runtime control panel & live mock tester in React frontend.
-- [x] Added comprehensive automated integration test suite (41 tests total).
+
+### ?? Milestone 5: Realistic Deterministic Data Engine (Complete)
+- [x] Eliminated silent state mutations on `GET` requests (empty collections return `[]`).
+- [x] Created dedicated `modules/runtime/generation/` engine with seedable PRNGs and deterministic branching.
+- [x] Built schema-aware value generators for strings (names, emails, India-friendly phones, addresses), numbers, booleans, dates, nested objects, and arrays.
+- [x] Enforced evaluation priority: explicit example > default > enum > generated value.
+- [x] Extended `NormalizedSchema` with constraint fields (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`).
+- [x] Implemented authenticated collection generation endpoint (`POST .../data/generate`) with effective seed exposure.
+- [x] Added mock data generation UI to React frontend.
+- [x] Created automated test suite (52 tests total, 100% pass rate).
 
 ---
 
@@ -206,7 +215,7 @@ HTTP Request --> /mock/{runtimeId}/** ¦ (No JWT required)
 +-------------------------------------------------------------¦
 ¦ Milestone 4: Stateful Mock Runtime Engine (Complete)        ¦
 +-------------------------------------------------------------¦
-¦ Milestone 5: AI-Assisted Contract Extraction (Gemini API)   ¦
+¦ Milestone 5: Realistic Deterministic Data Engine (Complete) ¦
 +-------------------------------------------------------------¦
 ¦ Milestone 6: Interactive Frontend Studio & Telemetry Stream ¦
 +-------------------------------------------------------------+
