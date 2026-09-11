@@ -78,6 +78,13 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
+    @ExceptionHandler(com.mockapilab.modules.runtime.state.RuntimeStateException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleRuntimeStateException(com.mockapilab.modules.runtime.state.RuntimeStateException ex) {
+        log.error("Runtime state error encountered: {}", ex.getMessage(), ex);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error("Runtime state service error: " + ex.getMessage(), Map.of("error", ex.getMessage())));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleGeneralException(Exception ex) {
         log.error("Unhandled exception encountered: ", ex);

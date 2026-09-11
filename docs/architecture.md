@@ -1,4 +1,4 @@
-# MockAPILab — Architecture & Design Decisions
+ï»¿# MockAPILab - Architecture & Design Decisions
 
 This document outlines the architectural principles, technology choices, and component responsibilities for **MockAPILab**.
 
@@ -9,7 +9,7 @@ This document outlines the architectural principles, technology choices, and com
 MockAPILab is intentionally structured as a **Modular Monolith** rather than a distributed set of microservices.
 
 ### Why a Modular Monolith?
-- **Domain Cohesion & Velocity:** Domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch, data generation) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
+- **Domain Cohesion & Velocity:** Domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch, data generation, state management) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
 - **Operational Simplicity:** Avoids the overhead of service meshes, distributed tracing, network latency between internal components, and multi-service deployment synchronization.
 - **Strict Boundary Enforcement:** Modules communicate via clean interfaces/DTOs within `com.mockapilab.modules.*`. When a module warrants independent scaling in the future, its clear package boundaries make extraction straightforward.
 
@@ -21,10 +21,11 @@ com.mockapilab
     +-- project/        # Workspace boundaries & owner isolation (M2)
     +-- contract/       # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
     +-- runtime/        # Stateful Mock Runtime Engine (M4)
-    ¦   +-- controller/ # Public mock gateway (/mock/{runtimeId}/**) & runtime management
-    ¦   +-- engine/     # Route compiler, regex matching, request validator, dispatcher
-    ¦   +-- state/      # Thread-safe isolated in-memory state store
-    ¦   +-- generation/ # Realistic deterministic data generation engine (M5)
+        +-- controller/ # Public mock gateway (/mock/{runtimeId}/**) & runtime management
+        +-- engine/     # Route compiler, regex matching, request validator, dispatcher
+        +-- state/      # Runtime state store abstraction, Redis & In-Memory implementations (M6)
+        +-- config/     # Redis & runtime bean configuration (M6)
+        +-- generation/ # Realistic deterministic data generation engine (M5)
     +-- scenario/       # Stateful workflows, sequences, and rule conditions (Future)
     +-- ai/             # Gemini-assisted schema ingestion & contract extraction (Future)
 ```
@@ -47,12 +48,13 @@ flowchart TD
         ContractModule["Contract Engine (Parser + Normalizer)"]
         RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
         DataEngine["Realistic Deterministic Data Engine\n(Seedable PRNG & Schema Evaluator)"]
-        StateStore["Thread-Safe RuntimeStateStore"]
+        StateStore["RuntimeStateStore Interface\n(RedisRuntimeStateStore / InMemoryRuntimeStateStore)"]
         AILayer["Contract Extractor (Gemini) (Future)"]
     end
 
-    subgraph Data ["Data Layer"]
-        PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB, Runtimes)")]
+    subgraph Data ["Data & Storage Layer"]
+        PG[("PostgreSQL 16\n(System of Record: Users, Projects, Contracts JSONB, Runtimes)")]
+        RedisStore[("Redis 7 (Shared Live Mock State)\nHashes & Collection Index Sets")]
     end
 
     UI -->|Authenticate, Manage Projects, Ingest Contracts, Start Runtimes, Generate Mock Data| API
@@ -68,22 +70,34 @@ flowchart TD
     AuthModule --> PG
     RuntimeEngine --> PG
     RuntimeEngine --> StateStore
+    StateStore -.->|Production / Multi-Instance| RedisStore
+    StateStore -.->|Test / Local Fallback| InMemoryMap["Process Memory"]
 ```
+
+### Component Breakdown
+| Layer / Component | Technology | Primary Responsibility |
+| :--- | :--- | :--- |
+| **Client Frontend** | React 18, TypeScript, Vite, TailwindCSS | User dashboard for authentication, project/contract management, runtime lifecycle, and data generation. |
+| **Backend Core** | Java 21, Spring Boot 3.3.x | Modular monolith hosting REST management APIs, route compilers, dispatch engine, and state machines. |
+| **Security & Identity** | Spring Security, jjwt (HMAC-SHA256), BCrypt | Stateless JWT verification, password hashing, workspace ownership enforcement. |
+| **Contract Ingestion** | SwaggerParser 2.1.x, Jackson | OpenAPI 3.x document parsing, dereferencing, normalization into canonical internal AST. |
+| **System of Record** | PostgreSQL 16, Flyway, Spring Data JPA | Relational storage for users, projects, normalized contracts (JSONB), and runtime definitions. |
+| **Live Runtime State** | Redis 7, Spring Data Redis (`StringRedisTemplate`) | Shared, partitioned mutable mock entity store across backend instances with atomic hashing and collection indexing. |
+| **Fallback State** | In-Memory (`ConcurrentHashMap` + `LinkedHashMap`) | Process-local state store for unit testing and standalone lightweight execution. |
+| **Data Generation** | Pure Java PRNG (`Random(seed)`), Curated datasets | Deterministic, reproducible, schema-aware mock data generation with zero AI dependency. |
 
 ---
 
 ## 3. Normalized Contract Architecture (Milestone 3 Core)
 
 ### 3.1 The Canonical Normalized Model Principle
-Downstream systems (mock runtime, dynamic data generator, scenario engine, contract diffing) must **never** depend directly on external OpenAPI formats.
-
-All incoming API specifications are transformed into a unified **`NormalizedContract`**:
+To decouple MockAPILab from the quirks of specific input formats (OpenAPI 2, OpenAPI 3.0, OpenAPI 3.1, code-first annotations, or future natural language inputs), the system normalizes all schemas and endpoints into a single internal AST (`NormalizedContract`).
 
 ```
-OpenAPI 3.x (JSON/YAML) --+
-                          ¦
-Spring/Express AST + AI --+--> [OpenApi / AST Parser] --> NormalizedContract --> JSONB Storage
-                          ¦                                        ¦
+OpenAPI 3.0/3.1 YAML/JSON ---+
+                             |
+Code Annotations (Future) ---+---> [ Parser & Normalizer ] ---> NormalizedContract (JSONB in PG)
+                             |                                         |
 Natural Language Specs ---+                                        +--> Dynamic Mock Engine (M4)
                                                                    +--> Deterministic Data Engine (M5)
                                                                    +--> Stateful Scenarios (Future)
@@ -114,11 +128,6 @@ Rather than provisioning separate OS processes or Docker containers per mock, Mo
   - `PUT/PATCH /collection/{id}`: Merges/updates stored entity, returns `200 OK` or `404 Not Found`.
   - `DELETE /collection/{id}`: Removes entity, returns `204 No Content` / `200 OK`; subsequent `GET` returns `404`.
   - `Generic / RPC endpoints`: Returns deterministic mock response conforming to `NormalizedResponse`.
-
-### 4.2 State Storage & Isolation
-- `RuntimeStateStore` abstracts state storage per `runtimeId` and collection path.
-- `InMemoryRuntimeStateStore` provides thread-safe partitioned storage using `ConcurrentHashMap` and synchronized `LinkedHashMap` to preserve insertion order.
-- Each runtime instance is strictly isolated: mutations in Runtime A do not affect Runtime B.
 
 ---
 
@@ -167,37 +176,106 @@ Data generation requires **zero external AI or online API dependencies**. A rich
 
 ---
 
-## 6. Architectural Decision Records (ADRs)
+## 6. Redis-Backed Runtime State Engine (Milestone 6 Core)
 
-### 6.1 Stateless JWT Authentication (ADR-001)
-Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+### 6.1 State Architecture & Division of Responsibility
+State in MockAPILab is divided into two distinct tiers:
 
-### 6.2 Strong Password Hashing (ADR-002)
-BCrypt with salting (`BCryptPasswordEncoder`).
+1. **System of Record (PostgreSQL):**
+   - User identity, workspace projects, normalized contract versions (JSONB), and runtime lifecycle status (`ACTIVE`, `STOPPED`).
+   - Strong relational integrity, foreign keys, transaction guarantees, and audit history.
+2. **Live Mutable Runtime State (Redis):**
+   - Transient, high-throughput, mutable mock entities created via mock `POST`/`PUT` endpoints or deterministic data generation.
+   - Shared across all backend application instances behind a load balancer.
 
-### 6.3 Strict DTO Boundaries (ADR-003)
-All controller APIs expose and consume Java Record DTOs.
+### 6.2 Redis Data Model & Key Structure
+All runtime keys use a strictly namespaced, hierarchical key format:
 
-### 6.4 Server-Side Workspace & Contract Isolation (ADR-004)
-All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+```
+mockapi:runtime:{runtimeId}:collection:{collectionPath}  -->  Redis HASH
+    Field: {entityId}
+    Value: JSON serialized Map<String, Object>
 
-### 6.5 Flyway Version-Controlled Migrations (ADR-005)
-Flyway scripts (`V1__...`, `V2__...`, `V3__...`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+mockapi:runtime:{runtimeId}:collections                  -->  Redis SET
+    Members: ["/pets", "/orders", "/users", ...]
+```
 
-### 6.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
-`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
+```mermaid
+flowchart TD
+    subgraph Redis ["Redis 7 Data Store"]
+        subgraph IndexSet ["Runtime Collection Index (Redis SET)"]
+            KeySet["mockapi:runtime:123:collections"]
+            KeySet -->|Member| PathPets["/pets"]
+            KeySet -->|Member| PathOrders["/orders"]
+        end
 
-### 6.7 In-Process Stateful Mock Runtime Engine (ADR-007)
-Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+        subgraph Hashes ["Collection Entities (Redis HASH)"]
+            HashPets["mockapi:runtime:123:collection:/pets"]
+            HashOrders["mockapi:runtime:123:collection:/orders"]
 
-### 6.8 Decoupled Deterministic Data Generation Engine (ADR-008)
-- **Decision:** Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
-- **Rationale:** Ensures offline stability, reproducible test fixtures, fast generation throughput, and clean REST semantics.
+            HashPets -->|"Field: 1"| Pet1["{\"id\":1,\"name\":\"Milo\"}"]
+            HashPets -->|"Field: 2"| Pet2["{\"id\":2,\"name\":\"Luna\"}"]
+
+            HashOrders -->|"Field: 101"| Order1["{\"id\":101,\"amount\":49.99}"]
+        end
+    end
+
+    PathPets -.-> HashPets
+    PathOrders -.-> HashOrders
+```
+
+### 6.3 Collection Existence & Lifecycle Semantics
+1. **Source of Truth:** The Collection Index Set (`mockapi:runtime:{runtimeId}:collections`) is the single source of truth for collection existence.
+2. **Empty Collection Semantics:** `hasCollection(runtimeId, collectionPath)` evaluates membership in the Redis Set index (`SISMEMBER`). An explicitly initialized empty collection evaluates to `true` even if its entity hash contains zero entries.
+3. **Deletion Retention Semantics:** When `deleteEntity` removes the final entity from a collection hash (`HDEL`), the collection path remains registered in the index set. Entity count becomes 0, but `hasCollection` remains `true`.
+4. **Runtime Teardown:** `clearRuntime(runtimeId)` queries the collection index set, deletes all corresponding collection hashes (`DEL`), and deletes the collection index set itself.
+
+### 6.4 Concurrency, Serialization & Error Handling
+- **Atomic Operations:** Field-level CRUD operations use atomic Redis hash commands (`HSET`, `HGET`, `HDEL`, `HLEN`, `HGETALL`).
+- **Serialization:** `ObjectMapper` deserializes JSON strings into `LinkedHashMap<String, Object>` to preserve property ordering.
+- **Fail-Fast Policy:** Redis communication or serialization failures are wrapped in `RuntimeStateException` (unchecked) and mapped by `GlobalExceptionHandler` to HTTP 503 `SERVICE_UNAVAILABLE` with clear diagnostic envelopes, ensuring errors are never swallowed.
 
 ---
 
-## 7. Architectural Invariants
+## 7. Architectural Decision Records (ADRs)
+
+### 7.1 Stateless JWT Authentication (ADR-001)
+Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+
+### 7.2 Strong Password Hashing (ADR-002)
+BCrypt with salting (`BCryptPasswordEncoder`).
+
+### 7.3 Strict DTO Boundaries (ADR-003)
+All controller APIs expose and consume Java Record DTOs.
+
+### 7.4 Server-Side Workspace & Contract Isolation (ADR-004)
+All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+
+### 7.5 Flyway Version-Controlled Migrations (ADR-005)
+Flyway scripts (`V1__...`, `V2__...`, `V3__...`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+
+### 7.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
+
+### 7.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+
+### 7.8 Decoupled Deterministic Data Generation Engine (ADR-008)
+- **Decision:** Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
+- **Rationale:** Ensures offline stability, reproducible test fixtures, fast generation throughput, and clean REST semantics.
+
+### 7.9 Redis-Backed Shared Runtime State Engine (ADR-009)
+- **Decision:** Implement `RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson), while retaining `InMemoryRuntimeStateStore` for lightweight local/test profiles via `@ConditionalOnProperty(name = "mockapilab.runtime.state-store", havingValue = "redis")`.
+- **Rationale:**
+  - Enables multiple backend instances to share live mock state seamlessly.
+  - Retains high performance and atomic entity-level mutations via Redis Hashes.
+  - Preserves runtime isolation and strict collection indexing without modifying public gateway contracts or route dispatch logic.
+
+---
+
+## 8. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hidden State Mutations:** Read operations (`GET`) never mutate runtime state; population is performed via explicit REST APIs or stateful mutations (`POST`, `PUT`).
 3. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
 4. **Module Independence:** Business modules communicate through designated services and DTOs without cyclic dependencies.
+5. **Collection Index as Source of Truth:** Collection existence is governed strictly by the collection index set, maintaining stability even when entity count reaches zero.

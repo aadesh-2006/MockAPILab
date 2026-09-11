@@ -1,5 +1,6 @@
 package com.mockapilab.modules.runtime.state;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * and maintains insertion ordering using synchronized LinkedHashMaps.
  */
 @Component
+@ConditionalOnProperty(name = "mockapilab.runtime.state-store", havingValue = "in-memory", matchIfMissing = true)
 public class InMemoryRuntimeStateStore implements RuntimeStateStore {
 
     // runtimeId -> (collectionPath -> (entityId -> entityAttributes))

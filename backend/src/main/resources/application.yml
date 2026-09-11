@@ -24,11 +24,19 @@ spring:
     enabled: true
     baseline-on-migrate: true
     locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2000ms}
 
 mockapilab:
   jwt:
     secret: ${JWT_SECRET:mockapilab-default-development-secret-key-must-be-at-least-256-bits-long-for-hmac-sha}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  runtime:
+    state-store: ${RUNTIME_STATE_STORE:redis}
 
 management:
   endpoints:
