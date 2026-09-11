@@ -7,6 +7,7 @@
 [![Architecture](https://img.shields.io/badge/architecture-Modular%20Monolith-orange.svg)](docs/architecture.md)
 [![Database](https://img.shields.io/badge/database-PostgreSQL%2016%20%7C%20JSONB%20%7C%20Flyway-blue.svg)](backend/src/main/resources/db/migration/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
+[![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
 
 ---
 
@@ -14,7 +15,7 @@
 
 **MockAPILab** is a developer productivity platform that transforms API contracts, OpenAPI specifications, or backend controller/model definitions into a locally runnable, realistic, and **stateful** mock backend. 
 
-Unlike traditional static mock servers that only return fixed JSON snippets, MockAPILab maintains contextual state, simulates multi-step business workflows (e.g., Create $\rightarrow$ Update $\rightarrow$ Query $\rightarrow$ Delete), introduces controlled network latencies and failure scenarios, and accelerates schema onboarding using AI.
+Unlike traditional static mock servers that only return fixed JSON snippets, MockAPILab maintains contextual in-memory state, executes multi-step REST CRUD lifecycles (e.g., `POST` $\rightarrow$ `GET collection` $\rightarrow$ `GET item` $\rightarrow$ `PUT` $\rightarrow$ `DELETE` $\rightarrow$ `404`), validates incoming request bodies against schema rules, and isolates state per runtime instance.
 
 ---
 
@@ -23,11 +24,11 @@ Unlike traditional static mock servers that only return fixed JSON snippets, Moc
 Modern development teams frequently face blocking dependencies between frontend and backend workflows:
 
 - **Backend Bottlenecks:** Frontend teams are delayed waiting for backend APIs to be designed, deployed, and stabilized.
-- **Unrealistic Static Mocks:** Existing mocking tools return static, stateless fixtures. They fail to test real-world scenarios such as pagination state, entity mutation, conditional errors, or race conditions.
+- **Unrealistic Static Mocks:** Existing mocking tools return static, stateless fixtures. They fail to test real-world scenarios such as entity mutation, schema validation failures, or resource lifecycles.
 - **Contract Drift:** Hand-written mock configurations drift rapidly from changing backend specifications.
 - **Manual Overhead:** Writing mock routes and state machines by hand is tedious and error-prone.
 
-**MockAPILab bridges this gap** by automating contract ingestion (including AI-powered extraction from code snippets), compiling stateful routes, and providing isolated, persistent or ephemeral mock environments for developers and automated tests.
+**MockAPILab bridges this gap** by compiling ingested contracts into dynamic in-process mock backends with stateful CRUD semantics and zero configuration.
 
 ---
 
@@ -47,53 +48,71 @@ flowchart TD
         AuthModule["Auth & Security Engine (JWT)"]
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser & Normalizer)"]
-        Runtime["Stateful Mock Dispatch Engine (Future)"]
+        RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
+        StateStore["Thread-Safe RuntimeStateStore"]
         AILayer["Contract Extractor (Gemini API) (Future)"]
-        ScenarioManager["Scenario & State Engine (Future)"]
     end
 
     subgraph Infrastructure ["Infrastructure Layer"]
-        PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB)")]
+        PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB, Runtimes)")]
         Redis[("Redis 7\n(Stateful Mock State & Caching) (Future)")]
         Kafka[("Apache Kafka\n(Event Stream & Telemetry) (Future)")]
     end
 
-    UI -->|Authenticate, Manage Projects & Ingest Contracts| API
-    DevApp -->|Execute Mock Requests| Runtime
+    UI -->|Authenticate, Manage Projects, Ingest Contracts, Launch Mocks| API
+    DevApp -->|Execute Public Mock Requests| RuntimeEngine
     API --> AuthModule
     API --> ProjectModule
     API --> ContractModule
+    API --> RuntimeEngine
     ContractModule --> PG
     ProjectModule --> PG
     AuthModule --> PG
-    Runtime --> Redis
-    Runtime --> Kafka
-    AILayer -.->|Infers Schemas & Seed Data| ContractModule
-    ScenarioManager --> Redis
+    RuntimeEngine --> PG
+    RuntimeEngine --> StateStore
+    AILayer -.->|Infers Schemas| ContractModule
 ```
 
 ---
 
-## 4. Normalized Contract Engine (Milestone 3)
+## 4. Stateful Mock Runtime Engine (Milestone 4)
 
-The core architectural foundation of MockAPILab is its **Canonical Normalized Contract Model**. Downstream mocking engines, dynamic data generators, and stateful scenario managers never depend directly on external OpenAPI formats.
+MockAPILab provides an in-process, high-throughput dynamic mock execution gateway:
 
 ```
-OpenAPI 3.x (JSON/YAML) ──┐
-                          │
-Spring/Express AST + AI ──┼──> [OpenApi / AST Parser] ──> NormalizedContract ──> JSONB Storage
-                          │                                        │
-Natural Language Specs ───┘                                        ├──> Dynamic Mock Engine (M4)
-                                                                   ├──> Stateful Scenarios (M4)
-                                                                   └──> Contract Diffing (Future)
+                          +------------------------+
+                          �   NormalizedContract   �
+                          +------------------------+
+                                      � RouteCompiler
+                                      ?
+                          +------------------------+
+                          �     CompiledRoutes     �
+                          +------------------------+
+                                      �
+HTTP Request --> /mock/{runtimeId}/** � (No JWT required)
+                                      ?
+                          +------------------------+
+                          �  MockRequestDispatcher �
+                          +------------------------+
+                                �            �
+            Schema Validation --�            +-- State Store Mutation
+            (MockRequestValidator)           �   (RuntimeStateStore)
+                                             ?
+                                  [201 Created / 200 OK / 404]
 ```
 
-### Supported OpenAPI 3.x Subset
-- **Formats:** JSON and YAML
-- **Operations:** `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`, `HEAD`
-- **Parameters:** `PATH`, `QUERY`, `HEADER`, `COOKIE` (with types, formats, required flags)
-- **Request Body & Responses:** Multi-media type content (`application/json`), status codes, headers
-- **Schemas:** Primitive types (`string`, `integer`, `number`, `boolean`), formatted types (`uuid`, `email`, `date-time`), nested `object` properties, `array` with item schemas, `enum` constants, and local `#/components/schemas/*` `$ref` resolution.
+### Key Capabilities
+- **Public Dynamic Gateway:** Accepts requests under `/mock/{runtimeId}/**` without requiring JWT authentication.
+- **Route Compilation:** Compiles paths (e.g. `/pets/{petId}`, `/users/{userId}/orders/{orderId}`) into regex matchers with specificity ordering.
+- **Request Validation:** Enforces required fields, primitive types, and enum constants against `NormalizedSchema`, returning structured `400 Bad Request` upon failure.
+- **Stateful REST Operations:**
+  - `POST /collection`: Generates/preserves ID, inserts entity into runtime state, returns `201 Created`.
+  - `GET /collection`: Returns list of stored entities (with automatic schema-driven mock seeding if empty).
+  - `GET /collection/{id}`: Looks up entity by ID, returns `200 OK` or `404 Not Found`.
+  - `PUT/PATCH /collection/{id}`: Merges/updates stored entity, returns `200 OK` or `404 Not Found`.
+  - `DELETE /collection/{id}`: Removes entity, returns `204 No Content` / `200 OK`; subsequent `GET` returns `404`.
+  - `Generic / RPC endpoints`: Returns deterministic mock response conforming to `NormalizedResponse`.
+- **Runtime State Isolation:** Thread-safe state store partitioned by `runtimeId`. Two runtimes created from the same contract never share state.
 
 ---
 
@@ -117,8 +136,13 @@ Natural Language Specs ───┘                                        ├�
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}` | Protected | Get contract details & latest version stats |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions` | Protected | List all versions for a contract |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions/{versionNumber}` | Protected | Retrieve full `NormalizedContract` JSON definition |
-
-> **Security Note:** All protected endpoints require a valid Bearer token in the `Authorization` header: `Authorization: Bearer <jwt_token>`. Project and contract access is strictly isolated per owner on the server side (attempting to access another user's project/contract returns `403 Forbidden`).
+| **Runtimes** | `POST` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions/{versionNumber}/runtime` | Protected | Start in-process stateful mock runtime |
+| **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes` | Protected | List all mock runtimes in project |
+| **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Get runtime details and status |
+| **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/status` | Protected | Get live runtime statistics, entities count & uptime |
+| **Runtimes** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/stop` | Protected | Stop active mock runtime |
+| **Runtimes** | `DELETE` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Stop, clear state, and delete runtime |
+| **Mock Gateway** | `ALL` | `/mock/{runtimeId}/**` | **Public** | **Execute dynamic stateful mock API calls** |
 
 ---
 
@@ -129,61 +153,64 @@ Natural Language Specs ───┘                                        ├�
 | **Core Backend** | Java 21, Spring Boot 3.4, Maven | Modular monolith backend runtime, REST API, mock engine |
 | **Security & Auth** | Spring Security 6, JJWT 0.12, BCrypt | Stateless JWT authentication, role & ownership authorization |
 | **Contract Engine** | SwaggerParser 2.1, Jackson YAML, SpringDoc OpenAPI | OpenAPI 3.x parser, validation, schema normalizer, Swagger UI |
+| **Mock Runtime** | Dynamic Regex Compiler, Schema Validator | Stateful REST simulation, isolated in-memory store |
 | **Database & ORM** | PostgreSQL 16, Spring Data JPA, Hibernate (JSONB) | Relational persistence + JSONB normalized contract snapshots |
-| **Schema Migrations**| Flyway Migration Engine | Deterministic, version-controlled database migrations (`V1`, `V2`) |
-| **Frontend** | React 18, TypeScript, Vite | Developer dashboard, schema visualizer, contract ingestion preview |
-| **State & Cache** | Redis 7 (Planned M4) | High-speed transient state storage for dynamic mocks |
-| **Event Streaming**| Apache Kafka 3.7 (KRaft) (Planned M4/M6) | Asynchronous invocation telemetry and event-driven mocking |
-| **AI Integration** | Google Gemini API (Planned M5) | Automated contract and schema extraction from raw source code |
+| **Schema Migrations**| Flyway Migration Engine | Deterministic, version-controlled database migrations (`V1`, `V2`, `V3`) |
+| **Frontend** | React 18, TypeScript, Vite | Developer dashboard, contract ingestion, runtime control & mock tester |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (34 tests) |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (41 tests) |
 
 ---
 
 ## 7. Current Milestone & Status
 
-### 📍 Milestone 1: Project Foundation (Complete)
+### ?? Milestone 1: Project Foundation (Complete)
 - [x] Initialized clean project repository structure (`backend/`, `frontend/`, `infrastructure/`, `docs/`).
 - [x] Established Java 21 Spring Boot 3 modular monolith base and package structure.
 - [x] Configured Docker Compose infrastructure definitions for PostgreSQL, Redis, and Kafka.
 
-### 📍 Milestone 2: Identity + Project Management (Complete)
+### ?? Milestone 2: Identity + Project Management (Complete)
 - [x] Integrated PostgreSQL with Spring Data JPA (`User` and `Project` entities with UUIDs).
 - [x] Configured Flyway database migrations (`V1__init_users_and_projects.sql`).
 - [x] Implemented stateless JWT authentication and BCrypt password hashing (`/register`, `/login`, `/me`).
 - [x] Implemented project workspace CRUD with strict server-side owner isolation.
 
-### 📍 Milestone 3: Contract Ingestion + Normalized Contract Engine (Complete)
+### ?? Milestone 3: Contract Ingestion + Normalized Contract Engine (Complete)
 - [x] Designed canonical `NormalizedContract` model (`endpoints`, `schemas`, `parameters`, `requestBody`, `responses`).
 - [x] Implemented OpenAPI 3.x Parser supporting JSON & YAML, local `$ref` resolution, enums, and nested types.
-- [x] Added contract validation rejecting malformed specs, non-OpenAPI 3.x versions, and broken references.
 - [x] Created Flyway migration `V2__init_contracts_and_versions.sql` storing normalized definitions in `JSONB`.
 - [x] Built contract ingestion and versioned retrieval REST APIs (`/api/v1/projects/{projectId}/contracts/**`).
-- [x] Added sample OpenAPI specification in [`docs/examples/sample-users-api.yaml`](docs/examples/sample-users-api.yaml).
-- [x] Exposed OpenAPI/Swagger documentation at `/swagger-ui.html`.
-- [x] Built 34 automated unit and integration tests.
+
+### ?? Milestone 4: Stateful Mock Runtime Engine (Complete)
+- [x] Created Flyway migration `V3__init_runtimes.sql` for runtime persistence and lifecycle tracking.
+- [x] Implemented route compiler with regex pattern extraction, specificity scoring, and REST operation inference.
+- [x] Built schema-driven request validator checking required fields, JSON structures, primitive types, and enums.
+- [x] Implemented thread-safe `RuntimeStateStore` providing isolated in-memory state per runtime.
+- [x] Built full stateful CRUD semantics (POST creates, GET lists, GET by ID retrieves, PUT updates, DELETE removes and produces 404).
+- [x] Built public `/mock/{runtimeId}/**` gateway allowing unauthenticated mock traffic.
+- [x] Built runtime management APIs (`/runtime`, `/status`, `/stop`, `DELETE`) with owner verification.
+- [x] Integrated runtime control panel & live mock tester in React frontend.
+- [x] Added comprehensive automated integration test suite (41 tests total).
 
 ---
 
 ## 8. Planned Development Phases
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Milestone 1: Project Foundation (Complete)                  │
-├─────────────────────────────────────────────────────────────┤
-│ Milestone 2: Identity + Project Management (Complete)       │
-├─────────────────────────────────────────────────────────────┤
-│ Milestone 3: Contract Ingestion & Normalization (Complete)  │
-├─────────────────────────────────────────────────────────────┤
-│ Milestone 4: Dynamic Mock Generation & Redis Stateful State │
-├─────────────────────────────────────────────────────────────┤
-│ Milestone 5: AI-Assisted Contract Extraction (Gemini API)   │
-├─────────────────────────────────────────────────────────────┤
-│ Milestone 6: Interactive Frontend Studio & Telemetry Stream │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+� Milestone 1: Project Foundation (Complete)                  �
++-------------------------------------------------------------�
+� Milestone 2: Identity + Project Management (Complete)       �
++-------------------------------------------------------------�
+� Milestone 3: Contract Ingestion & Normalization (Complete)  �
++-------------------------------------------------------------�
+� Milestone 4: Stateful Mock Runtime Engine (Complete)        �
++-------------------------------------------------------------�
+� Milestone 5: AI-Assisted Contract Extraction (Gemini API)   �
++-------------------------------------------------------------�
+� Milestone 6: Interactive Frontend Studio & Telemetry Stream �
++-------------------------------------------------------------+
 ```
-
-For detailed architectural rationale and module breakdowns, see [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -221,26 +248,10 @@ mvn spring-boot:run
 - Health endpoint: `http://localhost:8080/api/v1/status`
 - Swagger UI: `http://localhost:8080/swagger-ui.html`
 
-### Ingesting Sample Contract
-You can ingest the provided sample contract [`docs/examples/sample-users-api.yaml`](docs/examples/sample-users-api.yaml) via Swagger UI or cURL:
-```bash
-# 1. Register or login to obtain JWT token
-# 2. Create project to obtain projectId
-# 3. Ingest contract:
-curl -X POST http://localhost:8080/api/v1/projects/<projectId>/contracts \
-  -H "Authorization: Bearer <jwt_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Users Management API",
-    "description": "User CRUD specification",
-    "content": "'"$(cat docs/examples/sample-users-api.yaml)"'"
-  }'
-```
-
 ### Running the Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-*Frontend UI:* `http://localhost:5173`
+- Frontend UI: `http://localhost:5173`

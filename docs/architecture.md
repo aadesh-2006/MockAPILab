@@ -1,4 +1,4 @@
-# MockAPILab — Architecture & Design Decisions
+# MockAPILab � Architecture & Design Decisions
 
 This document outlines the architectural principles, technology choices, and component responsibilities for **MockAPILab**.
 
@@ -9,21 +9,20 @@ This document outlines the architectural principles, technology choices, and com
 MockAPILab is intentionally structured as a **Modular Monolith** rather than a distributed set of microservices.
 
 ### Why a Modular Monolith?
-- **Domain Cohesion & Velocity:** At this stage of development, domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
+- **Domain Cohesion & Velocity:** Domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
 - **Operational Simplicity:** Avoids the overhead of service meshes, distributed tracing, network latency between internal components, and multi-service deployment synchronization.
-- **Strict Boundary Enforcement:** Modules communicate via clean interfaces/DTOs within `com.mockapilab.modules.*`. When a module (e.g., dynamic runtime dispatch) warrants independent scaling in the future, its clear package boundaries make extraction straightforward.
+- **Strict Boundary Enforcement:** Modules communicate via clean interfaces/DTOs within `com.mockapilab.modules.*`. When a module warrants independent scaling in the future, its clear package boundaries make extraction straightforward.
 
 ```
 com.mockapilab
-├── common/             # Cross-cutting: web exceptions, API envelopes, CORS, OpenAPI configuration
-└── modules/
-    ├── auth/           # Identity, JWT issuance, password hashing, UserPrincipal (M2)
-    ├── project/        # Workspace boundaries & owner isolation (M2)
-    ├── contract/       # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
-    ├── generation/     # Deterministic & schema-driven mock payload generators (M4)
-    ├── scenario/       # Stateful workflows, sequences, and rule conditions (M4)
-    ├── runtime/        # High-throughput mock HTTP request matching engine (M4)
-    └── ai/             # Gemini-assisted schema ingestion & contract extraction (M5)
++-- common/             # Cross-cutting: web exceptions, API envelopes, CORS, OpenAPI configuration
++-- modules/
+    +-- auth/           # Identity, JWT issuance, password hashing, UserPrincipal (M2)
+    +-- project/        # Workspace boundaries & owner isolation (M2)
+    +-- contract/       # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
+    +-- runtime/        # Stateful Mock Runtime Engine: route compilation, validation, isolated state store (M4)
+    +-- scenario/       # Stateful workflows, sequences, and rule conditions (Future)
+    +-- ai/             # Gemini-assisted schema ingestion & contract extraction (M5)
 ```
 
 ---
@@ -38,33 +37,31 @@ flowchart TD
     end
 
     subgraph Backend ["MockAPILab Backend (Spring Boot 3 - Java 21)"]
-        API["REST & Admin API"]
+        API["REST & Admin Management API"]
         AuthModule["Auth & Security (JWT)"]
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser + Normalizer)"]
-        Runtime["Mock Dispatch Engine (Future)"]
+        RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
+        StateStore["Thread-Safe RuntimeStateStore"]
         AILayer["Contract Extractor (Gemini) (Future)"]
-        ScenarioEngine["State & Scenario Manager (Future)"]
     end
 
-    subgraph Data ["Data & Messaging Layer"]
-        PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB)")]
-        Redis[("Redis 7\n(Stateful Mock State) (Future)")]
-        Kafka[("Apache Kafka\n(Event Stream & Telemetry) (Future)")]
+    subgraph Data ["Data Layer"]
+        PG[("PostgreSQL 16\n(Users, Projects, Contracts JSONB, Runtimes)")]
     end
 
-    UI -->|Authenticate, Manage Projects & Ingest Contracts| API
-    DevApp -->|Execute Mock Requests| Runtime
+    UI -->|Authenticate, Manage Projects, Ingest Contracts, Start Runtimes| API
+    DevApp -->|Execute Public Mock Requests| RuntimeEngine
     API --> AuthModule
     API --> ProjectModule
     API --> ContractModule
+    API --> RuntimeEngine
     ContractModule --> PG
     ProjectModule --> PG
     AuthModule --> PG
-    Runtime --> Redis
-    Runtime --> Kafka
+    RuntimeEngine --> PG
+    RuntimeEngine --> StateStore
     AILayer -->|Infers Schemas| ContractModule
-    ScenarioEngine --> Redis
 ```
 
 ---
@@ -74,16 +71,16 @@ flowchart TD
 ### 3.1 The Canonical Normalized Model Principle
 The central architectural insight of MockAPILab is that **downstream systems (mock runtime, dynamic data generator, scenario engine, contract diffing) must NOT depend on third-party OpenAPI or Swagger object models.**
 
-Instead, all incoming API specifications—whether ingested as OpenAPI 3.x documents, extracted from backend controller source code via Gemini, or synthesized from natural language—are transformed into a unified **`NormalizedContract`**:
+All incoming API specifications are transformed into a unified **`NormalizedContract`**:
 
 ```
-OpenAPI 3.x (JSON/YAML) ──┐
-                          │
-Spring/Express AST + AI ──┼──> [OpenApi / AST Parser] ──> NormalizedContract ──> JSONB Storage
-                          │                                        │
-Natural Language Specs ───┘                                        ├──> Dynamic Mock Engine (M4)
-                                                                   ├──> Stateful Scenarios (M4)
-                                                                   └──> Contract Diffing (Future)
+OpenAPI 3.x (JSON/YAML) --+
+                          �
+Spring/Express AST + AI --+--> [OpenApi / AST Parser] --> NormalizedContract --> JSONB Storage
+                          �                                        �
+Natural Language Specs ---+                                        +--> Dynamic Mock Engine (M4)
+                                                                   +--> Stateful Scenarios (Future)
+                                                                   +--> Contract Diffing (Future)
 ```
 
 ### 3.2 Normalized Contract Structure
@@ -94,46 +91,57 @@ The normalized model (`com.mockapilab.modules.contract.model.normalized`) encaps
 - **`NormalizedRequestBody` & `NormalizedResponse`:** Status codes, descriptions, media type mappings (e.g. `application/json`), header specifications.
 - **`NormalizedSchema`:** Type (`string`, `integer`, `number`, `boolean`, `array`, `object`), format (`uuid`, `email`, `date-time`, etc.), properties, required properties, array items, enum constants, nullable flags, examples, and component references (`$ref`).
 
-### 3.3 PostgreSQL JSONB Persistence
-- **Decision:** Relational metadata (IDs, foreign keys, timestamps, version numbers) are indexed in standard PostgreSQL columns, while the `NormalizedContract` is persisted as a `JSONB` document via Hibernate's `@JdbcTypeCode(SqlTypes.JSON)`.
-- **Rationale:** Avoids schema churn and dozens of relational join tables for polymorphic OpenAPI structures, while providing fast indexing, deterministic document retrieval, and deep JSON querying in PostgreSQL.
+---
 
-### 3.4 Contract Versioning Model
-- `Contract` $\rightarrow$ `1..N` `ContractVersion`.
-- Every version (starting at `1`) is an **immutable snapshot** of the normalized definition with its source type (`OPENAPI`, `AI_CONTROLLER`, `NATURAL_LANGUAGE`).
-- Previous versions are never mutated or overwritten.
+## 4. Stateful Mock Runtime Engine (Milestone 4 Core)
+
+### 4.1 In-Process Dynamic Dispatch Architecture
+Rather than provisioning separate OS processes or Docker containers per mock, MockAPILab hosts dynamic mock backends in-process:
+- **Public Gateway:** Intercepts `/mock/{runtimeId}/**` without requiring JWT tokens.
+- **Route Compilation:** `RouteCompiler` compiles `NormalizedContract` paths (e.g. `/pets/{petId}`) into prioritized regex matchers with specificity weighting (exact paths prioritized over parameter variables).
+- **Request Validation:** `MockRequestValidator` validates incoming JSON payloads against schema rules (required fields, primitive type checks, enum constraints) returning `400 Bad Request` with structured error details upon violation.
+- **Stateful REST Semantics:**
+  - `POST /collection`: Generates/preserves ID, inserts entity into runtime collection state, returns `201 Created`.
+  - `GET /collection`: Returns list of stored entities (with automatic schema-driven initial mock seeding if empty).
+  - `GET /collection/{id}`: Looks up entity by ID, returns `200 OK` or `404 Not Found`.
+  - `PUT/PATCH /collection/{id}`: Merges/updates stored entity, returns `200 OK` or `404 Not Found`.
+  - `DELETE /collection/{id}`: Removes entity, returns `204 No Content` / `200 OK`; subsequent `GET` returns `404`.
+  - `Generic / RPC endpoints`: Returns deterministic mock response conforming to `NormalizedResponse`.
+
+### 4.2 State Storage & Isolation
+- `RuntimeStateStore` abstracts state storage per `runtimeId` and collection path.
+- `InMemoryRuntimeStateStore` provides thread-safe partitioned storage using `ConcurrentHashMap` and synchronized `LinkedHashMap` to preserve insertion order.
+- Each runtime instance is strictly isolated: mutations in Runtime A do not affect Runtime B.
 
 ---
 
-## 4. Architectural Decision Records (ADRs)
+## 5. Architectural Decision Records (ADRs)
 
-### 4.1 Stateless JWT Authentication (ADR-001)
+### 5.1 Stateless JWT Authentication (ADR-001)
 - **Decision:** Stateless HMAC-SHA256 tokens for identity and workspace authorization.
-- **Rationale:** No distributed session affinity required; seamless horizontal scale-out.
 
-### 4.2 Strong Password Hashing (ADR-002)
+### 5.2 Strong Password Hashing (ADR-002)
 - **Decision:** BCrypt with salting (`BCryptPasswordEncoder`).
-- **Rationale:** Protects against rainbow table and offline dictionary attacks.
 
-### 4.3 Strict DTO Boundaries (ADR-003)
+### 5.3 Strict DTO Boundaries (ADR-003)
 - **Decision:** All controller APIs expose and consume Java Record DTOs.
-- **Rationale:** Decouples internal persistence entities and prevents mass-assignment or sensitive field leakage.
 
-### 4.4 Server-Side Workspace & Contract Isolation (ADR-004)
-- **Decision:** All project and contract queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
-- **Rationale:** Multi-tenant workspace security; User A cannot access or create contracts in User B's projects.
+### 5.4 Server-Side Workspace & Contract Isolation (ADR-004)
+- **Decision:** All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
 
-### 4.5 Flyway Version-Controlled Migrations (ADR-005)
-- **Decision:** Flyway scripts (`V1__...`, `V2__...`) manage all schema evolution with `hibernate.ddl-auto=validate`.
-- **Rationale:** Deterministic database state across environments without non-deterministic Hibernate auto-DDL.
+### 5.5 Flyway Version-Controlled Migrations (ADR-005)
+- **Decision:** Flyway scripts (`V1__...`, `V2__...`, `V3__...`) manage all schema evolution with `hibernate.ddl-auto=validate`.
 
-### 4.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+### 5.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
 - **Decision:** `OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
-- **Rationale:** Protects the MockAPILab core from future upstream OpenAPI library breaking changes.
+
+### 5.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+- **Decision:** Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+- **Rationale:** High throughput, low latency, zero infrastructure overhead per mock server instance, and instant startup/teardown.
 
 ---
 
-## 5. Architectural Invariants
+## 6. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
 3. **Module Independence:** Business modules communicate through designated services and DTOs without cyclic dependencies.
