@@ -26,8 +26,9 @@ public class RuntimeStateHealthIndicator implements HealthIndicator {
 
     @Override
     public Health health() {
+        String storeClassName = runtimeStateStore.getClass().getSimpleName();
         try {
-            String storeClassName = runtimeStateStore.getClass().getSimpleName();
+            runtimeStateStore.checkHealth();
             return Health.up()
                     .withDetail("stateStoreType", configuredStoreType)
                     .withDetail("implementation", storeClassName)
@@ -36,7 +37,8 @@ public class RuntimeStateHealthIndicator implements HealthIndicator {
         } catch (Exception ex) {
             return Health.down()
                     .withDetail("stateStoreType", configuredStoreType)
-                    .withDetail("error", ex.getMessage())
+                    .withDetail("implementation", storeClassName)
+                    .withDetail("error", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName())
                     .build();
         }
     }

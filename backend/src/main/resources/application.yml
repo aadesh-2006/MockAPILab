@@ -76,7 +76,7 @@ management:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db,runtimeStateStore
+          include: readinessState,db,runtimeStateStore,kafka
 
 logging:
   level:

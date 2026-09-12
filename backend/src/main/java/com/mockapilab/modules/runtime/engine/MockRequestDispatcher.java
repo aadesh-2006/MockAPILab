@@ -1,6 +1,7 @@
 package com.mockapilab.modules.runtime.engine;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mockapilab.common.logging.CorrelationIdFilter;
 import com.mockapilab.modules.contract.model.normalized.NormalizedContract;
 import com.mockapilab.modules.contract.model.normalized.NormalizedEndpoint;
 import com.mockapilab.modules.contract.model.normalized.NormalizedMediaType;
@@ -20,6 +21,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -113,10 +115,12 @@ public class MockRequestDispatcher {
         // 1. Resolve active runtime instance
         RuntimeInstance instance = resolveRuntimeInstance(runtimeId);
         if (instance == null) {
-            Map<String, Object> error = Map.of(
-                    "status", HttpStatus.NOT_FOUND.value(),
-                    "error", "Mock runtime '" + runtimeId + "' is not running or does not exist."
-            );
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("timestamp", Instant.now());
+            error.put("status", HttpStatus.NOT_FOUND.value());
+            error.put("error", "Mock runtime '" + runtimeId + "' is not running or does not exist.");
+            error.put("path", "/mock/" + runtimeId + (subPath != null ? subPath : ""));
+            error.put("requestId", CorrelationIdFilter.getCorrelationId());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(error);
         }
 
@@ -137,17 +141,21 @@ public class MockRequestDispatcher {
 
         if (matchedRoute == null) {
             if (pathMatchedWithDifferentMethod) {
-                Map<String, Object> error = Map.of(
-                        "status", HttpStatus.METHOD_NOT_ALLOWED.value(),
-                        "error", "Method " + httpMethod + " not allowed for path " + normalizedPath
-                );
+                Map<String, Object> error = new LinkedHashMap<>();
+                error.put("timestamp", Instant.now());
+                error.put("status", HttpStatus.METHOD_NOT_ALLOWED.value());
+                error.put("error", "Method " + httpMethod + " not allowed for path " + normalizedPath);
+                error.put("path", normalizedPath);
+                error.put("requestId", CorrelationIdFilter.getCorrelationId());
                 return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).contentType(MediaType.APPLICATION_JSON).body(error);
             }
 
-            Map<String, Object> error = Map.of(
-                    "status", HttpStatus.NOT_FOUND.value(),
-                    "error", "Route not found in mock contract: " + httpMethod + " " + normalizedPath
-            );
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("timestamp", Instant.now());
+            error.put("status", HttpStatus.NOT_FOUND.value());
+            error.put("error", "Route not found in mock contract: " + httpMethod + " " + normalizedPath);
+            error.put("path", normalizedPath);
+            error.put("requestId", CorrelationIdFilter.getCorrelationId());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(error);
         }
 
@@ -160,10 +168,12 @@ public class MockRequestDispatcher {
             try {
                 parsedBody = objectMapper.readValue(rawBody, Object.class);
             } catch (Exception e) {
-                Map<String, Object> error = Map.of(
-                        "status", HttpStatus.BAD_REQUEST.value(),
-                        "error", "Malformed JSON request body: " + e.getMessage()
-                );
+                Map<String, Object> error = new LinkedHashMap<>();
+                error.put("timestamp", Instant.now());
+                error.put("status", HttpStatus.BAD_REQUEST.value());
+                error.put("error", "Malformed JSON request body: " + e.getMessage());
+                error.put("path", normalizedPath);
+                error.put("requestId", CorrelationIdFilter.getCorrelationId());
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body(error);
             }
         }
@@ -171,11 +181,13 @@ public class MockRequestDispatcher {
         // 5. Validate request against endpoint schema
         ValidationResult validation = requestValidator.validate(matchedRoute.getEndpoint(), parsedBody, instance.contract());
         if (!validation.valid()) {
-            Map<String, Object> error = Map.of(
-                    "status", HttpStatus.BAD_REQUEST.value(),
-                    "error", "Request validation failed",
-                    "details", validation.errors()
-            );
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("timestamp", Instant.now());
+            error.put("status", HttpStatus.BAD_REQUEST.value());
+            error.put("error", "Request validation failed");
+            error.put("details", validation.errors());
+            error.put("path", normalizedPath);
+            error.put("requestId", CorrelationIdFilter.getCorrelationId());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body(error);
         }
 
@@ -260,10 +272,12 @@ public class MockRequestDispatcher {
                     return ResponseEntity.status(statusCode).contentType(MediaType.APPLICATION_JSON).body(entityOpt.get());
                 }
 
-                Map<String, Object> notFound = Map.of(
-                    "status", HttpStatus.NOT_FOUND.value(),
-                    "error", "Entity with ID '" + entityId + "' not found in " + collectionPath
-                );
+                Map<String, Object> notFound = new LinkedHashMap<>();
+                notFound.put("timestamp", Instant.now());
+                notFound.put("status", HttpStatus.NOT_FOUND.value());
+                notFound.put("error", "Entity with ID '" + entityId + "' not found in " + collectionPath);
+                notFound.put("path", requestPath);
+                notFound.put("requestId", CorrelationIdFilter.getCorrelationId());
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(notFound);
             }
 
@@ -275,10 +289,12 @@ public class MockRequestDispatcher {
 
                 Optional<Map<String, Object>> existing = stateStore.getEntity(runtimeId, collectionPath, entityId);
                 if (existing.isEmpty()) {
-                    Map<String, Object> notFound = Map.of(
-                            "status", HttpStatus.NOT_FOUND.value(),
-                            "error", "Entity with ID '" + entityId + "' not found in " + collectionPath
-                    );
+                    Map<String, Object> notFound = new LinkedHashMap<>();
+                    notFound.put("timestamp", Instant.now());
+                    notFound.put("status", HttpStatus.NOT_FOUND.value());
+                    notFound.put("error", "Entity with ID '" + entityId + "' not found in " + collectionPath);
+                    notFound.put("path", requestPath);
+                    notFound.put("requestId", CorrelationIdFilter.getCorrelationId());
                     return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(notFound);
                 }
 
@@ -301,10 +317,12 @@ public class MockRequestDispatcher {
 
                 boolean deleted = stateStore.deleteEntity(runtimeId, collectionPath, entityId);
                 if (!deleted) {
-                    Map<String, Object> notFound = Map.of(
-                            "status", HttpStatus.NOT_FOUND.value(),
-                            "error", "Entity with ID '" + entityId + "' not found in " + collectionPath
-                    );
+                    Map<String, Object> notFound = new LinkedHashMap<>();
+                    notFound.put("timestamp", Instant.now());
+                    notFound.put("status", HttpStatus.NOT_FOUND.value());
+                    notFound.put("error", "Entity with ID '" + entityId + "' not found in " + collectionPath);
+                    notFound.put("path", requestPath);
+                    notFound.put("requestId", CorrelationIdFilter.getCorrelationId());
                     return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(notFound);
                 }
 

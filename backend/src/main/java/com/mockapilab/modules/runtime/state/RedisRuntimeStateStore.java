@@ -7,6 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -214,6 +216,19 @@ public class RedisRuntimeStateStore implements RuntimeStateStore {
         } catch (DataAccessException e) {
             log.error("Redis error calculating collection count for runtime '{}': {}", runtimeId, e.getMessage());
             throw new RuntimeStateException("Failed to calculate collection count from Redis: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void checkHealth() {
+        try {
+            String pong = redisTemplate.execute((RedisCallback<String>) RedisConnection::ping);
+            if (pong == null || (!"PONG".equalsIgnoreCase(pong) && !pong.contains("PONG"))) {
+                throw new RuntimeStateException("Redis ping did not return PONG");
+            }
+        } catch (DataAccessException e) {
+            log.error("Redis health check ping failed: {}", e.getMessage());
+            throw new RuntimeStateException("Redis state store is unreachable: " + e.getMessage(), e);
         }
     }
 

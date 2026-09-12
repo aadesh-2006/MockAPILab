@@ -532,8 +532,8 @@ Base Version (NormalizedContract v1)
 - **Leak Prevention:** Strictly masks and excludes passwords, JWT tokens, `Authorization` headers, raw Redis contents, and Gemini prompts from all log streams.
 
 ### 11.2 Spring Boot Actuator & Health Probes
-- **Liveness & Readiness Groups:** Configured `/actuator/health/liveness` (`livenessState`) and `/actuator/health/readiness` (`readinessState`, `db`, `runtimeStateStore`).
-- **`RuntimeStateHealthIndicator`:** Custom component reporting operational status, state store type (`redis` / `in-memory`), and underlying implementation to ensure Redis state store failures are immediately distinguishable from standard application errors.
+- **Liveness & Readiness Groups:** Configured `/actuator/health/liveness` (`livenessState`) and `/actuator/health/readiness` (`readinessState`, `db`, `runtimeStateStore`, `kafka`).
+- **`RuntimeStateHealthIndicator`:** Custom component reporting operational status, state store type (`redis` / `in-memory`), and underlying implementation to ensure Redis state store failures are immediately distinguishable from standard application errors. Real availability checks (e.g. lightweight Redis ping) report `DOWN` if the store is unreachable without silent fallbacks.
 
 ### 11.3 Micrometer Platform Metrics
 - `mockapilab.mock.requests.total`: Counter tagged with `runtimeId`, `method`, `statusGroup`, and `statusCode`.

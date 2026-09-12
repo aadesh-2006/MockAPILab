@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -45,6 +46,7 @@ public class GlobalExceptionHandler {
         }
 
         Map<String, Object> errorDetails = new LinkedHashMap<>();
+        errorDetails.put("timestamp", Instant.now());
         errorDetails.put("status", HttpStatus.BAD_REQUEST.value());
         errorDetails.put("error", "Validation Failed");
         errorDetails.put("message", "Validation failed for one or more fields");
@@ -175,6 +177,7 @@ public class GlobalExceptionHandler {
             HttpServletRequest request
     ) {
         Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", Instant.now());
         body.put("status", status.value());
         body.put("error", errorType);
         body.put("message", message);

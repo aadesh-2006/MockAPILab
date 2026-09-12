@@ -56,4 +56,11 @@ public interface RuntimeStateStore {
      * Returns the number of distinct collections stored for a runtime instance.
      */
     int getCollectionCount(UUID runtimeId);
+
+    /**
+     * Verifies that the underlying state store is reachable and operational.
+     *
+     * @throws Exception if store is unreachable or unhealthy
+     */
+    void checkHealth() throws Exception;
 }

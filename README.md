@@ -241,7 +241,7 @@ com.mockapilab
 | **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, Scenario Studio, AI extraction & runtime controls |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
 | **Observability** | Spring Boot Actuator, Micrometer, SLF4J MDC | Health/readiness checks, operational metrics, request correlation |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (146 tests) |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (151 tests) |
 
 ---
 
@@ -329,12 +329,12 @@ com.mockapilab
 - [x] Implemented `CorrelationIdFilter` propagating `X-Request-Id` through SLF4J MDC and response headers without logging sensitive credentials or tokens.
 - [x] Unified error envelope formatting across `GlobalExceptionHandler`, `RestAuthenticationEntryPoint`, and `RestAccessDeniedHandler` with correlation ID tracking.
 - [x] Exposed Spring Boot Actuator endpoints (`/actuator/health`, `/actuator/info`, `/actuator/metrics`) and custom `RuntimeStateHealthIndicator`.
-- [x] Registered custom Micrometer platform metrics (`mockapi.requests.total`, `mockapi.scenarios.matched`, `mockapi.generation.jobs`, `mockapi.drift.analyses`).
+- [x] Registered custom Micrometer platform metrics (`mockapilab.mock.requests.total`, `mockapilab.mock.requests.duration`, `mockapilab.scenario.triggered.total`, `mockapilab.generation.jobs.total`, `mockapilab.drift.analyses.total`).
 - [x] Created `EndToEndPlatformIntegrationTest` validating complete platform lifecycle across Auth, Projects, Contracts, Stateful Runtime, Scenarios, and Drift Detection.
 - [x] Documented OpenAPI / Swagger schemas across all controllers (`/swagger-ui.html`).
 - [x] Polished React frontend UX with loading indicators, empty states, health indicator badge, and request ID tracking pill.
 - [x] Updated comprehensive architecture documentation and ADR records (`ADR-014`).
-- [x] Verified full test suite passing (146 tests total, 100% pass rate).
+- [x] Verified full test suite passing (151 tests total, 100% pass rate).
 
 ---
 

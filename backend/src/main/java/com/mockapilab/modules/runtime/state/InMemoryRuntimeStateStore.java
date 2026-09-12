@@ -147,6 +147,11 @@ public class InMemoryRuntimeStateStore implements RuntimeStateStore {
         return runtimeData == null ? 0 : runtimeData.size();
     }
 
+    @Override
+    public void checkHealth() {
+        // In-memory store is operational as long as the JVM bean exists
+    }
+
     private String normalizeCollectionPath(String path) {
         if (path == null || path.isBlank()) {
             return "/";

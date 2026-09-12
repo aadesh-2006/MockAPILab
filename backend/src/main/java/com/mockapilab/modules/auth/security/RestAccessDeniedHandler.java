@@ -13,6 +13,7 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -40,6 +41,7 @@ public class RestAccessDeniedHandler implements AccessDeniedHandler {
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);
 
         Map<String, Object> errorDetails = new LinkedHashMap<>();
+        errorDetails.put("timestamp", Instant.now());
         errorDetails.put("status", HttpServletResponse.SC_FORBIDDEN);
         errorDetails.put("error", "Forbidden");
         errorDetails.put("message", "Access is denied");
