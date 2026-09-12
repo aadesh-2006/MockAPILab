@@ -54,6 +54,19 @@ public class ContractController {
                 .body(ApiResponse.success("Contract ingested and normalized successfully", response));
     }
 
+    @PostMapping("/{contractId}/versions")
+    @Operation(summary = "Ingest New Contract Version", description = "Parses and normalizes a new OpenAPI specification version for an existing contract.")
+    public ResponseEntity<ApiResponse<ContractVersionDetailResponse>> addContractVersion(
+            @PathVariable UUID projectId,
+            @PathVariable UUID contractId,
+            @Valid @RequestBody IngestContractRequest request,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        ContractVersionDetailResponse response = contractService.addContractVersion(projectId, contractId, request, principal.getId());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success("New contract version ingested successfully", response));
+    }
+
     @PostMapping("/ai-extract")
     @Operation(summary = "Extract Contract via Gemini AI", description = "Analyzes natural-language descriptions or Spring Boot code with Gemini AI, validates deterministically, and normalizes into a canonical API contract.")
     public ResponseEntity<ApiResponse<AiExtractContractResponse>> aiExtractContract(

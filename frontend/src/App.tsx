@@ -44,6 +44,35 @@ interface ScenarioItem {
   updatedAt: string
 }
 
+interface DriftChange {
+  id: string
+  changeType: string
+  classification: 'BREAKING' | 'NON_BREAKING' | 'INFORMATIONAL'
+  severity: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  path?: string | null
+  method?: string | null
+  location?: string | null
+  oldValue?: string | null
+  newValue?: string | null
+  message: string
+}
+
+interface DriftReport {
+  id: string
+  projectId: string
+  contractId: string
+  fromVersionId: string
+  toVersionId: string
+  fromVersionNumber: number
+  toVersionNumber: number
+  breakingChangeCount: number
+  nonBreakingChangeCount: number
+  informationalChangeCount: number
+  overallSeverity: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  createdAt: string
+  changes: DriftChange[]
+}
+
 function App() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -178,6 +207,83 @@ role: enum [ADMIN, DEVELOPER, USER]`)
   const [scenarioLoading, setScenarioLoading] = useState(false)
   const [scenarioStatus, setScenarioStatus] = useState<string | null>(null)
 
+  // Contract Drift Detection State (M10)
+  const [driftContractId, setDriftContractId] = useState('')
+  const [driftFromVersion, setDriftFromVersion] = useState<number>(1)
+  const [driftToVersion, setDriftToVersion] = useState<number>(2)
+  const [driftLoading, setDriftLoading] = useState(false)
+  const [driftStatus, setDriftStatus] = useState<string | null>(null)
+  const [currentDriftReport, setCurrentDriftReport] = useState<DriftReport | null>(null)
+  const [pastDriftReports, setPastDriftReports] = useState<DriftReport[]>([])
+  const [driftFilter, setDriftFilter] = useState<'ALL' | 'BREAKING' | 'NON_BREAKING' | 'INFORMATIONAL'>('ALL')
+  const [newVersionContent, setNewVersionContent] = useState(`openapi: 3.0.3
+info:
+  title: Users Service API
+  version: 2.0.0
+paths:
+  /users:
+    get:
+      summary: List all users
+      parameters:
+        - name: apiKey
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A list of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+    post:
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/User'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /orders:
+    get:
+      summary: List orders
+      responses:
+        '200':
+          description: List of orders
+components:
+  schemas:
+    User:
+      type: object
+      required:
+        - name
+        - email
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        department:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, DEVELOPER, USER, GUEST]
+`)
+  const [newVersionLoading, setNewVersionLoading] = useState(false)
+
   // Live Mock Dispatch Tester State
   const [mockPath, setMockPath] = useState('/users')
   const [mockMethod, setMockMethod] = useState('GET')
@@ -234,6 +340,7 @@ role: enum [ADMIN, DEVELOPER, USER]`)
       const data = await res.json()
       if (res.ok) {
         setIngestedContractId(data.data.id)
+        setDriftContractId(data.data.id)
         setIngestStatus(`Success: Ingested "${data.data.name}" (ID: ${data.data.id}, Version ${data.data.latestVersion}, ${data.data.totalEndpoints} endpoints)`)
       } else {
         setIngestStatus(`Error (${res.status}): ${data.message || JSON.stringify(data.data)}`)
@@ -327,6 +434,7 @@ public record CreateProductRequest(String title, Double price, String category) 
       if (res.ok && data.data) {
         const result = data.data
         setIngestedContractId(result.contractId)
+        setDriftContractId(result.contractId)
         setContractName(result.name)
         setAiExtractedSummary({
           endpoints: result.extractedEndpointsCount,
@@ -679,6 +787,115 @@ public record CreateProductRequest(String title, Double price, String category) 
       console.error('Failed to delete scenario:', err)
     }
   }
+
+  const handleAnalyzeDrift = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !driftContractId) {
+      setDriftStatus('Please provide Project ID and Contract ID.')
+      return
+    }
+
+    setDriftLoading(true)
+    setDriftStatus(null)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/contracts/${driftContractId.trim()}/drift`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          fromVersion: driftFromVersion,
+          toVersion: driftToVersion,
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok && data.data) {
+        setCurrentDriftReport(data.data)
+        setDriftStatus(`Drift analysis completed successfully (Severity: ${data.data.overallSeverity})`)
+        fetchDriftReports(projectId, driftContractId, jwtToken)
+      } else {
+        setDriftStatus(`Drift analysis failed: ${data.message || JSON.stringify(data.data)}`)
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setDriftStatus(`Request error: ${errorMessage}`)
+    } finally {
+      setDriftLoading(false)
+    }
+  }
+
+  const fetchDriftReports = async (pId: string, cId: string, token?: string) => {
+    if (!pId || !cId) return
+    try {
+      const headers: Record<string, string> = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token.trim()}`
+      }
+      const res = await fetch(`/api/v1/projects/${pId.trim()}/contracts/${cId.trim()}/drift`, { headers })
+      const data = await res.json()
+      if (res.ok && data.data) {
+        setPastDriftReports(data.data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch drift reports:', err)
+    }
+  }
+
+  const handlePublishNewVersion = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !driftContractId || !newVersionContent) {
+      setDriftStatus('Please provide Project ID, Contract ID, and Version content.')
+      return
+    }
+
+    setNewVersionLoading(true)
+    setDriftStatus(null)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/contracts/${driftContractId.trim()}/versions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: `${contractName} v${driftToVersion}`,
+          content: newVersionContent,
+          sourceType: 'OPENAPI',
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok && data.data) {
+        setDriftStatus(`Success: Ingested new Contract Version ${data.data.versionNumber}! You can now run drift analysis.`)
+      } else {
+        setDriftStatus(`Error ingesting version (${res.status}): ${data.message || JSON.stringify(data.data)}`)
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setDriftStatus(`Network Error: ${errorMessage}`)
+    } finally {
+      setNewVersionLoading(false)
+    }
+  }
+
+  const filteredChanges = currentDriftReport
+    ? currentDriftReport.changes.filter((c) => {
+        if (driftFilter === 'ALL') return true
+        return c.classification === driftFilter
+      })
+    : []
 
   return (
     <main className="container">
@@ -1315,6 +1532,315 @@ public record CreateProductRequest(String title, Double price, String category) 
         {mockResponse && (
           <div className="status-box" style={{ background: '#0f172a', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
             {mockResponse}
+          </div>
+        )}
+      </section>
+
+      <section className="card ingest-card">
+        <h2>7. Contract Drift Detection &amp; Analysis (M10)</h2>
+        <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
+          Compare two immutable NormalizedContract versions to deterministically detect breaking changes, additions, schema drift, and severity risk.
+        </p>
+
+        {/* Publish v2 Version Helper */}
+        <details style={{ marginBottom: '1.5rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '8px', padding: '0.75rem 1rem' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#60a5fa', fontSize: '0.9rem' }}>
+            &plus; Ingest New Version (v2, v3...) for Existing Contract
+          </summary>
+          <form onSubmit={handlePublishNewVersion} style={{ marginTop: '1rem' }} className="ingest-form">
+            <div className="form-group">
+              <label htmlFor="newVerContent">New Version Specification (OpenAPI JSON/YAML):</label>
+              <textarea
+                id="newVerContent"
+                rows={5}
+                value={newVersionContent}
+                onChange={(e) => setNewVersionContent(e.target.value)}
+                style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+              />
+            </div>
+            <button type="submit" disabled={newVersionLoading || !driftContractId} className="submit-btn">
+              {newVersionLoading ? 'Publishing Version...' : 'Publish New Contract Version'}
+            </button>
+          </form>
+        </details>
+
+        {/* Drift Analysis Trigger Form */}
+        <form onSubmit={handleAnalyzeDrift} className="ingest-form" style={{ marginBottom: '1.5rem' }}>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label htmlFor="driftContractInput">Contract UUID:</label>
+              <input
+                id="driftContractInput"
+                type="text"
+                placeholder="Target Contract ID"
+                value={driftContractId}
+                onChange={(e) => setDriftContractId(e.target.value)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="driftFromVer">Base Version:</label>
+              <input
+                id="driftFromVer"
+                type="number"
+                min={1}
+                value={driftFromVersion}
+                onChange={(e) => setDriftFromVersion(parseInt(e.target.value, 10) || 1)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="driftToVer">Target Version:</label>
+              <input
+                id="driftToVer"
+                type="number"
+                min={1}
+                value={driftToVersion}
+                onChange={(e) => setDriftToVersion(parseInt(e.target.value, 10) || 1)}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button type="submit" disabled={driftLoading || !driftContractId || !projectId} className="submit-btn" style={{ flex: 2 }}>
+              {driftLoading ? 'Analyzing Contract Drift...' : `Run Drift Analysis (v${driftFromVersion} \u2192 v${driftToVersion})`}
+            </button>
+            <button
+              type="button"
+              onClick={() => fetchDriftReports(projectId, driftContractId, jwtToken)}
+              disabled={!projectId || !driftContractId}
+              className="submit-btn"
+              style={{ flex: 1, background: '#1e293b', border: '1px solid #334155' }}
+            >
+              Fetch History
+            </button>
+          </div>
+        </form>
+
+        {driftStatus && (
+          <div className={`status-box ${driftStatus.startsWith('Success') || driftStatus.startsWith('Drift analysis completed') ? 'success' : 'alert'}`}>
+            {driftStatus}
+          </div>
+        )}
+
+        {/* Drift Report Metrics Cards */}
+        {currentDriftReport && (
+          <div style={{ marginTop: '1.5rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+              <div style={{ background: '#1e293b', border: '1px solid #dc2626', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
+                <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#f87171' }}>
+                  {currentDriftReport.breakingChangeCount}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#fca5a5', fontWeight: 600, marginTop: '0.25rem' }}>
+                  BREAKING CHANGES
+                </div>
+              </div>
+
+              <div style={{ background: '#1e293b', border: '1px solid #10b981', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
+                <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#34d399' }}>
+                  {currentDriftReport.nonBreakingChangeCount}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#6ee7b7', fontWeight: 600, marginTop: '0.25rem' }}>
+                  NON-BREAKING CHANGES
+                </div>
+              </div>
+
+              <div style={{ background: '#1e293b', border: '1px solid #3b82f6', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
+                <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#60a5fa' }}>
+                  {currentDriftReport.informationalChangeCount}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#93c5fd', fontWeight: 600, marginTop: '0.25rem' }}>
+                  INFORMATIONAL
+                </div>
+              </div>
+
+              <div style={{ background: '#1e293b', border: '1px solid #64748b', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
+                <div style={{
+                  fontSize: '1.1rem',
+                  fontWeight: 800,
+                  marginTop: '0.35rem',
+                  color: currentDriftReport.overallSeverity === 'CRITICAL' ? '#ef4444'
+                    : currentDriftReport.overallSeverity === 'HIGH' ? '#f87171'
+                    : currentDriftReport.overallSeverity === 'MEDIUM' ? '#fbbf24'
+                    : currentDriftReport.overallSeverity === 'LOW' ? '#60a5fa' : '#34d399'
+                }}>
+                  {currentDriftReport.overallSeverity}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600, marginTop: '0.5rem' }}>
+                  OVERALL SEVERITY
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Tabs */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid #334155', paddingBottom: '0.5rem' }}>
+              {(['ALL', 'BREAKING', 'NON_BREAKING', 'INFORMATIONAL'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setDriftFilter(filter)}
+                  style={{
+                    background: driftFilter === filter ? '#334155' : 'transparent',
+                    border: 'none',
+                    color: driftFilter === filter ? '#f8fafc' : '#94a3b8',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: driftFilter === filter ? 600 : 400
+                  }}
+                >
+                  {filter} ({filter === 'ALL' ? currentDriftReport.changes.length : currentDriftReport.changes.filter(c => c.classification === filter).length})
+                </button>
+              ))}
+            </div>
+
+            {/* Changes List */}
+            {filteredChanges.length === 0 ? (
+              <p style={{ fontSize: '0.85rem', color: '#64748b', textAlign: 'center', margin: '2rem 0' }}>
+                No changes matching the selected filter.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {filteredChanges.map((change, idx) => (
+                  <div
+                    key={change.id || idx}
+                    style={{
+                      background: '#0f172a',
+                      border: `1px solid ${change.classification === 'BREAKING' ? '#7f1d1d' : change.classification === 'NON_BREAKING' ? '#065f46' : '#1e3a8a'}`,
+                      borderRadius: '8px',
+                      padding: '1rem'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <span style={{
+                          padding: '0.2rem 0.5rem',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          background: change.classification === 'BREAKING' ? '#dc2626' : change.classification === 'NON_BREAKING' ? '#059669' : '#2563eb',
+                          color: '#fff'
+                        }}>
+                          {change.classification}
+                        </span>
+                        <span style={{
+                          padding: '0.2rem 0.4rem',
+                          borderRadius: '4px',
+                          fontSize: '0.7rem',
+                          background: '#1e293b',
+                          color: '#94a3b8',
+                          border: '1px solid #334155'
+                        }}>
+                          {change.changeType}
+                        </span>
+                        {change.method && change.path && (
+                          <code style={{ fontSize: '0.85rem', color: '#38bdf8' }}>
+                            {change.method} {change.path}
+                          </code>
+                        )}
+                      </div>
+                      <span style={{
+                        fontSize: '0.75rem',
+                        color: change.severity === 'CRITICAL' || change.severity === 'HIGH' ? '#f87171' : change.severity === 'MEDIUM' ? '#fbbf24' : '#60a5fa',
+                        fontWeight: 600
+                      }}>
+                        Severity: {change.severity}
+                      </span>
+                    </div>
+
+                    <p style={{ margin: '0.35rem 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
+                      {change.message}
+                    </p>
+
+                    {change.location && (
+                      <p style={{ margin: '0.2rem 0', fontSize: '0.75rem', color: '#64748b' }}>
+                        Location: <code>{change.location}</code>
+                      </p>
+                    )}
+
+                    {(change.oldValue || change.newValue) && (
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
+                        {change.oldValue && (
+                          <div style={{ flex: 1, background: '#1c1917', border: '1px solid #7f1d1d', borderRadius: '4px', padding: '0.4rem 0.6rem' }}>
+                            <span style={{ color: '#ef4444', fontWeight: 600, display: 'block', fontSize: '0.7rem' }}>OLD VALUE</span>
+                            <code style={{ color: '#fca5a5', textDecoration: 'line-through' }}>{change.oldValue}</code>
+                          </div>
+                        )}
+                        {change.newValue && (
+                          <div style={{ flex: 1, background: '#022c22', border: '1px solid #065f46', borderRadius: '4px', padding: '0.4rem 0.6rem' }}>
+                            <span style={{ color: '#10b981', fontWeight: 600, display: 'block', fontSize: '0.7rem' }}>NEW VALUE</span>
+                            <code style={{ color: '#6ee7b7' }}>{change.newValue}</code>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Historical Drift Reports */}
+        {pastDriftReports.length > 0 && (
+          <div style={{ marginTop: '2rem' }}>
+            <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>Historical Drift Reports for Contract</h3>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #334155', textAlign: 'left', color: '#94a3b8' }}>
+                    <th style={{ padding: '0.5rem' }}>Version Diff</th>
+                    <th style={{ padding: '0.5rem' }}>Breaking</th>
+                    <th style={{ padding: '0.5rem' }}>Non-Breaking</th>
+                    <th style={{ padding: '0.5rem' }}>Severity</th>
+                    <th style={{ padding: '0.5rem' }}>Analyzed At</th>
+                    <th style={{ padding: '0.5rem' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pastDriftReports.map((r) => (
+                    <tr key={r.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.5rem' }}>
+                        <strong>v{r.fromVersionNumber} &rarr; v{r.toVersionNumber}</strong>
+                      </td>
+                      <td style={{ padding: '0.5rem', color: r.breakingChangeCount > 0 ? '#f87171' : '#94a3b8' }}>
+                        {r.breakingChangeCount}
+                      </td>
+                      <td style={{ padding: '0.5rem', color: '#34d399' }}>
+                        {r.nonBreakingChangeCount}
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <span style={{
+                          padding: '0.15rem 0.4rem',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 'bold',
+                          background: r.overallSeverity === 'CRITICAL' ? '#7f1d1d' : r.overallSeverity === 'HIGH' ? '#991b1b' : r.overallSeverity === 'MEDIUM' ? '#78350f' : '#065f46',
+                          color: '#fff'
+                        }}>
+                          {r.overallSeverity}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem', color: '#64748b' }}>
+                        {new Date(r.createdAt).toLocaleString()}
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCurrentDriftReport(r)
+                            setDriftFromVersion(r.fromVersionNumber)
+                            setDriftToVersion(r.toVersionNumber)
+                          }}
+                          style={{ background: '#334155', border: 'none', color: '#f8fafc', padding: '0.2rem 0.5rem', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+                        >
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>

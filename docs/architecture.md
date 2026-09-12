@@ -20,6 +20,14 @@ com.mockapilab
     +-- auth/               # Identity, JWT issuance, password hashing, UserPrincipal (M2)
     +-- project/            # Workspace boundaries & owner isolation (M2)
     +-- contract/           # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
+        +-- controller/     # Ingestion & version retrieval endpoints
+        +-- drift/          # Deterministic Contract Drift Detection Engine (M10)
+            +-- controller/ # /api/v1/projects/{projectId}/contracts/{contractId}/drift/**
+            +-- dto/        # DriftAnalysisRequest, DriftReportResponse, DriftChangeResponse
+            +-- engine/     # ContractDiffEngine (recursive schema diff) & DriftClassifier
+            +-- model/      # ContractDriftReport, ContractDriftChange, DriftChangeType, DriftClassification, DriftSeverity
+            +-- repository/ # ContractDriftReportRepository
+            +-- service/    # ContractDriftService
     +-- runtime/            # Stateful Mock Runtime Engine (M4/M5/M6/M7)
         +-- controller/     # Mock gateway (/mock/{runtimeId}/**), runtime controls, async job endpoints
         +-- engine/         # Route compiler, regex matching, request validator, dispatcher
@@ -30,7 +38,13 @@ com.mockapilab
         +-- model/          # MockRuntime and GenerationJob entities (M4/M7)
         +-- repository/     # MockRuntimeRepository and GenerationJobRepository
         +-- service/        # RuntimeService and GenerationJobService
-    +-- scenario/           # Stateful workflows, sequences, and rule conditions (Future)
+    +-- scenario/           # Scenario Engine & Failure Injector (M9)
+        +-- controller/     # CRUD & enable/disable scenario endpoints
+        +-- dto/            # ScenarioRequest, ScenarioResponse
+        +-- engine/         # ScenarioEngine (4-tier precedence matcher & executor)
+        +-- model/          # Scenario entity, ScenarioAction, ScenarioStatus
+        +-- repository/     # ScenarioRepository (with atomic execution increment)
+        +-- service/        # ScenarioService
     +-- ai/                 # Gemini AI-assisted contract extraction & normalization engine (M8)
         +-- config/         # AiProperties (gemini api-key, model, timeouts)
         +-- converter/      # AiCandidateConverter (maps candidate AST to NormalizedContract)
@@ -455,50 +469,107 @@ WHERE id = :id AND (max_executions IS NULL OR execution_count < max_executions)
 
 ---
 
-## 10. Architectural Decision Records (ADRs)
+## 10. Contract Drift Detection Engine (Milestone 10)
 
-### 10.1 Stateless JWT Authentication (ADR-001)
-Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+### 10.1 Goal & Core Principle
+The **Contract Drift Detection Engine** provides deterministic, analysis-only comparison between two immutable `NormalizedContract` version snapshots. It classifies structural differences into `BREAKING`, `NON_BREAKING`, and `INFORMATIONAL` changes, computes overall drift severity risk (`NONE`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and persists immutable audit reports.
 
-### 10.2 Strong Password Hashing (ADR-002)
-BCrypt with salting (`BCryptPasswordEncoder`).
+**Core Invariant:** Contract versions are immutable snapshots. Drift detection is purely read-only analysis and NEVER modifies contract definitions, mock runtimes, or live mock state stores.
 
-### 10.3 Strict DTO Boundaries (ADR-003)
-All controller APIs expose and consume Java Record DTOs.
+### 10.2 Architectural Data Flow
+```
+Base Version (NormalizedContract v1)
+                 │
+                 ▼
+       [ ContractDiffEngine ] <── Target Version (NormalizedContract v2)
+                 │
+                 ├── Canonical Ordering Normalization
+                 ├── Cycle-Safe Recursive Schema Traversal
+                 └── [ DriftClassifier ] (Semantic Rules & Severity)
+                 │
+                 ▼
+       [ ContractDriftReport ] (PostgreSQL durable audit record)
+```
 
-### 10.4 Server-Side Workspace & Contract Isolation (ADR-004)
-All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+### 10.3 Change Classification Matrix
+| Change Type | Context | Condition | Classification | Severity |
+| :--- | :--- | :--- | :--- | :--- |
+| `ENDPOINT_ADDED` | Contract | Any | `NON_BREAKING` | `LOW` |
+| `ENDPOINT_REMOVED` | Contract | Any | `BREAKING` | `CRITICAL` |
+| `PARAMETER_ADDED` | Endpoint | `required == true` | `BREAKING` | `HIGH` |
+| `PARAMETER_ADDED` | Endpoint | `required == false` | `NON_BREAKING` | `LOW` |
+| `PARAMETER_REMOVED` | Endpoint | `wasRequired == true` | `BREAKING` | `HIGH` |
+| `PARAMETER_REMOVED` | Endpoint | `wasRequired == false` | `NON_BREAKING` | `LOW` |
+| `PARAMETER_REQUIRED_CHANGED` | Endpoint | `false -> true` | `BREAKING` | `HIGH` |
+| `PARAMETER_TYPE_CHANGED` | Endpoint | Any | `BREAKING` | `HIGH` |
+| `REQUEST_BODY_ADDED` | Operation | `required == true` | `BREAKING` | `HIGH` |
+| `REQUEST_BODY_ADDED` | Operation | `required == false` | `NON_BREAKING` | `LOW` |
+| `REQUEST_BODY_REMOVED` | Operation | Any | `BREAKING` | `HIGH` |
+| `RESPONSE_STATUS_REMOVED` | Operation | Any | `BREAKING` | `HIGH` |
+| `RESPONSE_STATUS_ADDED` | Operation | Any | `NON_BREAKING` | `LOW` |
+| `PROPERTY_ADDED` | Request Payload | `required == true` | `BREAKING` | `HIGH` |
+| `PROPERTY_ADDED` | Request Payload | `required == false` | `NON_BREAKING` | `LOW` |
+| `PROPERTY_ADDED` | Response Payload| Any | `NON_BREAKING` | `LOW` |
+| `PROPERTY_REMOVED` | Response Payload| Any | `BREAKING` | `HIGH` |
+| `PROPERTY_TYPE_CHANGED` | Schema | Any | `BREAKING` | `HIGH` |
+| `ENUM_VALUE_REMOVED` | Request Schema | Any | `BREAKING` | `HIGH` |
+| `ENUM_VALUE_ADDED` | Response Schema | Strict clients | `BREAKING` | `MEDIUM` |
+| `METADATA_CHANGED` | Contract Info | Title / Version | `INFORMATIONAL` | `LOW` |
 
-### 10.5 Flyway Version-Controlled Migrations (ADR-005)
-Flyway scripts (`V1`, `V2`, `V3`, `V4`, `V5`) manage all schema evolution with `hibernate.ddl-auto=validate`.
-
-### 10.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
-`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
-
-### 10.7 In-Process Stateful Mock Runtime Engine (ADR-007)
-Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
-
-### 10.8 Decoupled Deterministic Data Generation Engine (ADR-008)
-Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
-
-### 10.9 Redis-Backed Shared Runtime State Engine (ADR-009)
-`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
-
-### 10.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
-- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
-- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
-
-### 10.11 Gemini AI-Assisted Contract Extraction (ADR-011)
-- **Decision:** Use Google Gemini Generative Language REST API via a pluggable `AiProvider` to extract candidate contracts (`AiCandidateContract`), followed by deterministic validation (`AiCandidateValidator`) and conversion into canonical `NormalizedContract`.
-- **Rationale:** Enables developers to quickly create mock APIs from informal natural-language specifications or existing Spring Boot controller code, without allowing AI hallucinations to directly dictate runtime execution or bypass schema validation.
-
-### 10.12 Interactive Scenario Engine & Failure Injection Layer (ADR-012)
-- **Decision:** Implement a lightweight policy interception layer inside `MockRequestDispatcher` backed by PostgreSQL-stored `Scenario` definitions, deterministic 4-tier precedence matching, atomic database execution counting, and bounded latency.
-- **Rationale:** Allows full-stack developers to test frontend resilience against slow networks, rate limiting, auth failures, and intermittent server crashes without modifying contract schemas or polluting Redis mock state.
+### 10.4 Canonical Ordering & Cycle Protection
+- **Ordering Insensitivity:** Schemas, property maps, endpoint lists, and parameter lists are canonically sorted before comparison to avoid false positive drift reports resulting from JSON/YAML key ordering differences.
+- **Cycle Safety:** Recursive object schemas (e.g. self-referencing tree nodes) are tracked via `visitedComparisons` set to guarantee termination without stack overflow.
 
 ---
 
-## 11. Architectural Invariants
+## 11. Architectural Decision Records (ADRs)
+
+### 11.1 Stateless JWT Authentication (ADR-001)
+Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+
+### 11.2 Strong Password Hashing (ADR-002)
+BCrypt with salting (`BCryptPasswordEncoder`).
+
+### 11.3 Strict DTO Boundaries (ADR-003)
+All controller APIs expose and consume Java Record DTOs.
+
+### 11.4 Server-Side Workspace & Contract Isolation (ADR-004)
+All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+
+### 11.5 Flyway Version-Controlled Migrations (ADR-005)
+Flyway scripts (`V1`, `V2`, `V3`, `V4`, `V5`, `V6`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+
+### 11.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
+
+### 11.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+
+### 11.8 Decoupled Deterministic Data Generation Engine (ADR-008)
+Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
+
+### 11.9 Redis-Backed Shared Runtime State Engine (ADR-009)
+`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
+
+### 11.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
+- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
+- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
+
+### 11.11 Gemini AI-Assisted Contract Extraction (ADR-011)
+- **Decision:** Use Google Gemini Generative Language REST API via a pluggable `AiProvider` to extract candidate contracts (`AiCandidateContract`), followed by deterministic validation (`AiCandidateValidator`) and conversion into canonical `NormalizedContract`.
+- **Rationale:** Enables developers to quickly create mock APIs from informal natural-language specifications or existing Spring Boot controller code, without allowing AI hallucinations to directly dictate runtime execution or bypass schema validation.
+
+### 11.12 Interactive Scenario Engine & Failure Injection Layer (ADR-012)
+- **Decision:** Implement a lightweight policy interception layer inside `MockRequestDispatcher` backed by PostgreSQL-stored `Scenario` definitions, deterministic 4-tier precedence matching, atomic database execution counting, and bounded latency.
+- **Rationale:** Allows full-stack developers to test frontend resilience against slow networks, rate limiting, auth failures, and intermittent server crashes without modifying contract schemas or polluting Redis mock state.
+
+### 11.13 Deterministic Contract Drift Detection & Semantic Diffing (ADR-013)
+- **Decision:** Implement a dedicated `ContractDiffEngine` and `DriftClassifier` operating strictly on canonical `NormalizedContract` ASTs, storing immutable reports in PostgreSQL (`contract_drift_reports` and `contract_drift_changes`).
+- **Rationale:** Detects and flags breaking changes, additions, parameter modifications, and payload drift before client breakage occurs, while preserving complete contract snapshot immutability and zero runtime side-effects.
+
+---
+
+## 12. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hidden State Mutations:** Read operations (`GET`) never mutate runtime state; population is performed via explicit REST APIs or stateful mutations (`POST`, `PUT`).
 3. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
@@ -507,3 +578,4 @@ Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and c
 6. **Three-Tier Storage Separation:** PostgreSQL is the durable system of record; Kafka is the event backbone; Redis is the live mock state.
 7. **AI Proposes, Engine Disposes:** AI models propose candidate contracts (`AiCandidateContract`); only deterministically validated and converted `NormalizedContract` instances are persisted and executed. AI never directly accesses, executes, or mutates live runtimes.
 8. **State Preservation on Scenario Injected Failures:** When a scenario forces a failure response on a mutating operation (`POST`, `PUT`, `DELETE`), normal mock route execution and state store mutation are strictly bypassed, preserving Redis state integrity.
+9. **Immutable Contract Versions & Analysis-Only Drift:** Contract version snapshots are strictly immutable; drift analysis is read-only, deterministic, and never mutates contract definitions, mock runtimes, or live entity stores.

@@ -75,6 +75,31 @@ public class ContractService {
     }
 
     @Transactional
+    public ContractVersionDetailResponse addContractVersion(UUID projectId, UUID contractId, IngestContractRequest request, UUID currentUserId) {
+        verifyProjectOwnership(projectId, currentUserId);
+
+        Contract contract = contractRepository.findByIdAndProjectId(contractId, projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Contract not found with id: " + contractId));
+
+        int nextVersionNumber = contractVersionRepository.findFirstByContractIdOrderByVersionNumberDesc(contractId)
+                .map(v -> v.getVersionNumber() + 1)
+                .orElse(1);
+
+        NormalizedContract normalizedContract = openApiContractParser.parse(request.content());
+
+        ContractVersion newVersion = new ContractVersion(
+                contract,
+                nextVersionNumber,
+                request.getEffectiveSourceType(),
+                normalizedContract
+        );
+        contract.addVersion(newVersion);
+        ContractVersion savedVersion = contractVersionRepository.save(newVersion);
+
+        return ContractVersionDetailResponse.fromEntity(savedVersion);
+    }
+
+    @Transactional
     public AiExtractContractResponse extractAndIngestAiContract(UUID projectId, AiExtractContractRequest request, UUID currentUserId) {
         Project project = verifyProjectOwnership(projectId, currentUserId);
 

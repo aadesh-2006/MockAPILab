@@ -10,6 +10,7 @@
 [![Event Streaming](https://img.shields.io/badge/Event%20Streaming-Apache%20Kafka%203.7%20%28KRaft%29-red.svg)](backend/src/main/java/com/mockapilab/modules/runtime/messaging/)
 [![AI Engine](https://img.shields.io/badge/AI%20Engine-Gemini%20Contract%20Extraction-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/ai/)
 [![Scenario Engine](https://img.shields.io/badge/Scenario%20Engine-Interactive%20Failure%20Injector-darkred.svg)](backend/src/main/java/com/mockapilab/modules/scenario/)
+[![Drift Detection](https://img.shields.io/badge/Drift%20Detection-Semantic%20Breaking%20Change%20Classifier-blue.svg)](backend/src/main/java/com/mockapilab/modules/contract/drift/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
 [![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
 [![Data Engine](https://img.shields.io/badge/Data%20Engine-Deterministic%20Realistic%20Generator-teal.svg)](backend/src/main/java/com/mockapilab/modules/runtime/generation/)
@@ -195,7 +196,11 @@ com.mockapilab
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts` | Protected | List contracts belonging to project (owner only) |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}` | Protected | Get contract details & latest version stats |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions` | Protected | List all versions for a contract |
+| **Contracts**| `POST` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions` | Protected | Ingest new specification version for existing contract |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions/{versionNumber}` | Protected | Retrieve full `NormalizedContract` JSON definition |
+| **Drift**    | `POST` | `/api/v1/projects/{projectId}/contracts/{contractId}/drift` | Protected | **Run deterministic drift analysis between versions (`HTTP 201`)** |
+| **Drift**    | `GET`  | `/api/v1/projects/{projectId}/contracts/{contractId}/drift` | Protected | **List all historical drift reports for a contract** |
+| **Drift**    | `GET`  | `/api/v1/projects/{projectId}/contracts/{contractId}/drift/{reportId}` | Protected | **Get single drift report with all semantic diff changes** |
 | **Runtimes** | `POST` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions/{versionNumber}/runtime` | Protected | Start in-process stateful mock runtime |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes` | Protected | List all mock runtimes in project |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Get runtime details and status |
@@ -309,6 +314,17 @@ com.mockapilab
 - [x] Built React Scenario Studio with preset switchers (Auth 401, Rate Limit 429, Flaky Server 500, Latency 2000ms).
 - [x] Created comprehensive automated test suite (129 tests total, 100% pass rate).
 
+### ✅ Milestone 10: Contract Drift Detection (Complete)
+- [x] Created Flyway migration `V6__init_contract_drift_reports.sql` and durable JPA entities (`ContractDriftReport`, `ContractDriftChange`).
+- [x] Built deterministic `ContractDiffEngine` comparing two immutable `NormalizedContract` versions.
+- [x] Implemented canonical ordering normalization across endpoints, parameters, properties, and enums to eliminate spurious false-drift.
+- [x] Built cycle-safe recursive schema traversal protecting against recursive data model definitions.
+- [x] Implemented `DriftClassifier` categorizing diffs into `BREAKING`, `NON_BREAKING`, and `INFORMATIONAL` with severity scoring (`NONE`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+- [x] Implemented authenticated REST APIs (`POST .../drift`, `GET .../drift`, `GET .../drift/{reportId}`, `POST .../versions`) with strict project owner authorization.
+- [x] Enforced complete snapshot immutability and zero runtime/state mutation side-effects.
+- [x] Built interactive React Contract Drift Viewer with version diff selectors, summary metric cards, filter tabs, and Old vs New diff rendering.
+- [x] Expanded test suite to 142 automated tests with 100% pass rate.
+
 ---
 
 ## 8. Planned Development Phases
@@ -332,6 +348,8 @@ com.mockapilab
 │ Milestone 8: Gemini AI Contract Extraction (Complete)       │
 +-------------------------------------------------------------+
 │ Milestone 9: Interactive Scenario Engine (Complete)         │
++-------------------------------------------------------------+
+│ Milestone 10: Contract Drift Detection (Complete)           │
 +-------------------------------------------------------------+
 ```
 
