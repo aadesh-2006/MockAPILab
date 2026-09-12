@@ -10,6 +10,8 @@ import com.mockapilab.modules.runtime.model.MockRuntime;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
 import com.mockapilab.modules.runtime.state.RuntimeStateStore;
+import com.mockapilab.modules.scenario.engine.ScenarioEngine;
+import com.mockapilab.modules.scenario.engine.ScenarioEvaluationResult;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -27,7 +29,7 @@ import java.util.UUID;
  * Core dynamic mock request dispatcher.
  * <p>
  * Routes incoming HTTP requests for a given runtime ID to the compiled route table,
- * enforces schema validations, and executes isolated stateful REST operations.
+ * enforces schema validations, evaluates scenario failure injection rules, and executes isolated stateful REST operations.
  */
 @Component
 public class MockRequestDispatcher {
@@ -38,6 +40,7 @@ public class MockRequestDispatcher {
     private final RouteCompiler routeCompiler;
     private final MockRequestValidator requestValidator;
     private final DeterministicResponseGenerator responseGenerator;
+    private final ScenarioEngine scenarioEngine;
     private final ObjectMapper objectMapper;
 
     public MockRequestDispatcher(
@@ -47,6 +50,7 @@ public class MockRequestDispatcher {
             RouteCompiler routeCompiler,
             MockRequestValidator requestValidator,
             DeterministicResponseGenerator responseGenerator,
+            ScenarioEngine scenarioEngine,
             ObjectMapper objectMapper
     ) {
         this.runtimeRegistry = runtimeRegistry;
@@ -55,6 +59,7 @@ public class MockRequestDispatcher {
         this.routeCompiler = routeCompiler;
         this.requestValidator = requestValidator;
         this.responseGenerator = responseGenerator;
+        this.scenarioEngine = scenarioEngine;
         this.objectMapper = objectMapper;
     }
 
@@ -135,7 +140,13 @@ public class MockRequestDispatcher {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON).body(error);
         }
 
-        // 6. Execute stateful REST semantics
+        // 6. Evaluate active scenario rules and failure injection
+        ScenarioEvaluationResult scenarioResult = scenarioEngine.evaluateAndExecute(runtimeId, httpMethod, normalizedPath);
+        if (scenarioResult.shouldShortCircuit()) {
+            return scenarioResult.injectedResponse();
+        }
+
+        // 7. Execute stateful REST semantics
         return executeRoute(runtimeId, instance, matchedRoute, normalizedPath, pathVariables, parsedBody);
     }
 

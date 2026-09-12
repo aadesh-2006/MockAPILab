@@ -25,6 +25,25 @@ interface GenerationJobInfo {
   completedAt?: string
 }
 
+interface ScenarioItem {
+  id: string
+  runtimeId: string
+  projectId: string
+  name: string
+  description?: string
+  status: 'ACTIVE' | 'DISABLED'
+  pathPattern: string
+  httpMethod?: string | null
+  action: 'FORCE_STATUS' | 'DELAY' | 'RANDOM_FAILURE'
+  statusCode?: number | null
+  delayMs?: number | null
+  probabilityPercent?: number | null
+  maxExecutions?: number | null
+  executionCount: number
+  createdAt: string
+  updatedAt: string
+}
+
 function App() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -144,6 +163,20 @@ role: enum [ADMIN, DEVELOPER, USER]`)
   const [genStatus, setGenStatus] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   const [activeJob, setActiveJob] = useState<GenerationJobInfo | null>(null)
+
+  // Scenario Studio & Failure Injector State (M9)
+  const [scenarios, setScenarios] = useState<ScenarioItem[]>([])
+  const [scenarioName, setScenarioName] = useState('Auth 401 Unauthorized')
+  const [scenarioDesc, setScenarioDesc] = useState('Always return 401 for /users endpoint')
+  const [scenarioPath, setScenarioPath] = useState('/users')
+  const [scenarioMethod, setScenarioMethod] = useState('GET')
+  const [scenarioAction, setScenarioAction] = useState<'FORCE_STATUS' | 'DELAY' | 'RANDOM_FAILURE'>('FORCE_STATUS')
+  const [scenarioStatusCode, setScenarioStatusCode] = useState<number>(401)
+  const [scenarioDelayMs, setScenarioDelayMs] = useState<number>(2000)
+  const [scenarioProbability, setScenarioProbability] = useState<number>(25)
+  const [scenarioMaxExecutions, setScenarioMaxExecutions] = useState<string>('')
+  const [scenarioLoading, setScenarioLoading] = useState(false)
+  const [scenarioStatus, setScenarioStatus] = useState<string | null>(null)
 
   // Live Mock Dispatch Tester State
   const [mockPath, setMockPath] = useState('/users')
@@ -485,6 +518,168 @@ public record CreateProductRequest(String title, Double price, String category) 
     }
   }
 
+  const fetchScenarios = async (pId: string, rId: string, token?: string) => {
+    if (!pId || !rId) return
+    try {
+      const headers: Record<string, string> = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token.trim()}`
+      }
+      const res = await fetch(`/api/v1/projects/${pId.trim()}/runtimes/${rId.trim()}/scenarios`, { headers })
+      const data = await res.json()
+      if (res.ok && data.data) {
+        setScenarios(data.data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch scenarios:', err)
+    }
+  }
+
+  const handleApplyScenarioPreset = (preset: 'AUTH_401' | 'RATE_LIMIT_429' | 'FLAKY_500' | 'LATENCY_2000') => {
+    switch (preset) {
+      case 'AUTH_401':
+        setScenarioName('Auth 401 Unauthorized')
+        setScenarioDesc('Always return 401 Unauthorized for /users')
+        setScenarioPath('/users')
+        setScenarioMethod('GET')
+        setScenarioAction('FORCE_STATUS')
+        setScenarioStatusCode(401)
+        setScenarioMaxExecutions('')
+        break
+      case 'RATE_LIMIT_429':
+        setScenarioName('Rate Limit 429 Too Many Requests')
+        setScenarioDesc('Return 429 for first 5 requests on /users')
+        setScenarioPath('/users')
+        setScenarioMethod('GET')
+        setScenarioAction('FORCE_STATUS')
+        setScenarioStatusCode(429)
+        setScenarioMaxExecutions('5')
+        break
+      case 'FLAKY_500':
+        setScenarioName('Server Degradation 500 (25%)')
+        setScenarioDesc('Inject 500 Internal Error for 25% of requests on /users')
+        setScenarioPath('/users')
+        setScenarioMethod('GET')
+        setScenarioAction('RANDOM_FAILURE')
+        setScenarioStatusCode(500)
+        setScenarioProbability(25)
+        setScenarioMaxExecutions('')
+        break
+      case 'LATENCY_2000':
+        setScenarioName('Network Latency 2000ms')
+        setScenarioDesc('Add 2000ms latency to /users endpoint')
+        setScenarioPath('/users')
+        setScenarioMethod('GET')
+        setScenarioAction('DELAY')
+        setScenarioDelayMs(2000)
+        setScenarioMaxExecutions('')
+        break
+    }
+  }
+
+  const handleCreateScenario = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !runtimeId || !scenarioName || !scenarioPath) {
+      setScenarioStatus('Please specify Project ID, Runtime ID, Scenario Name, and Path.')
+      return
+    }
+
+    setScenarioLoading(true)
+    setScenarioStatus(null)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+
+      const payload: Record<string, unknown> = {
+        name: scenarioName.trim(),
+        description: scenarioDesc.trim(),
+        status: 'ACTIVE',
+        pathPattern: scenarioPath.trim(),
+        httpMethod: scenarioMethod && scenarioMethod !== 'ALL' ? scenarioMethod.trim() : null,
+        action: scenarioAction,
+      }
+
+      if (scenarioAction === 'FORCE_STATUS') {
+        payload.statusCode = scenarioStatusCode
+      } else if (scenarioAction === 'DELAY') {
+        payload.delayMs = scenarioDelayMs
+      } else if (scenarioAction === 'RANDOM_FAILURE') {
+        payload.statusCode = scenarioStatusCode
+        payload.probabilityPercent = scenarioProbability
+      }
+
+      if (scenarioMaxExecutions && scenarioMaxExecutions.trim() !== '') {
+        const parsed = parseInt(scenarioMaxExecutions.trim(), 10)
+        if (!isNaN(parsed) && parsed > 0) {
+          payload.maxExecutions = parsed
+        }
+      }
+
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/runtimes/${runtimeId.trim()}/scenarios`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      })
+
+      const data = await res.json()
+      if (res.ok && data.data) {
+        setScenarioStatus(`Success: Scenario "${data.data.name}" created (ID: ${data.data.id})`)
+        fetchScenarios(projectId, runtimeId, jwtToken)
+      } else {
+        setScenarioStatus(`Error (${res.status}): ${data.message || JSON.stringify(data.data)}`)
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setScenarioStatus(`Network Error: ${errorMessage}`)
+    } finally {
+      setScenarioLoading(false)
+    }
+  }
+
+  const handleToggleScenario = async (scenarioId: string, currentStatus: 'ACTIVE' | 'DISABLED') => {
+    if (!projectId || !runtimeId) return
+    const endpoint = currentStatus === 'ACTIVE' ? 'disable' : 'enable'
+    try {
+      const headers: Record<string, string> = {}
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/runtimes/${runtimeId.trim()}/scenarios/${scenarioId}/${endpoint}`, {
+        method: 'POST',
+        headers,
+      })
+      if (res.ok) {
+        fetchScenarios(projectId, runtimeId, jwtToken)
+      }
+    } catch (err) {
+      console.error('Failed to toggle scenario status:', err)
+    }
+  }
+
+  const handleDeleteScenario = async (scenarioId: string) => {
+    if (!projectId || !runtimeId) return
+    try {
+      const headers: Record<string, string> = {}
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/runtimes/${runtimeId.trim()}/scenarios/${scenarioId}`, {
+        method: 'DELETE',
+        headers,
+      })
+      if (res.ok) {
+        fetchScenarios(projectId, runtimeId, jwtToken)
+      }
+    } catch (err) {
+      console.error('Failed to delete scenario:', err)
+    }
+  }
+
   return (
     <main className="container">
       <header className="header">
@@ -782,7 +977,291 @@ public record CreateProductRequest(String title, Double price, String category) 
       </section>
 
       <section className="card ingest-card">
-        <h2>5. Live Mock Request Dispatcher Tester</h2>
+        <h2>5. Scenario Studio &amp; Failure Injector (M9)</h2>
+        <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
+          Configure dynamic scenarios, forced HTTP errors (401, 429, 500), probabilistic failures, and latency injection without altering contract schemas or mutating mock state.
+        </p>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.85rem', color: '#94a3b8' }}>
+            Quick Scenario Presets:
+          </label>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => handleApplyScenarioPreset('AUTH_401')}
+              className="submit-btn"
+              style={{ flex: 1, minWidth: '150px', background: '#1e293b', border: '1px solid #334155', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+            >
+              Auth 401 Unauthorized
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyScenarioPreset('RATE_LIMIT_429')}
+              className="submit-btn"
+              style={{ flex: 1, minWidth: '150px', background: '#1e293b', border: '1px solid #334155', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+            >
+              Rate Limit 429 (5 reqs)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyScenarioPreset('FLAKY_500')}
+              className="submit-btn"
+              style={{ flex: 1, minWidth: '150px', background: '#1e293b', border: '1px solid #334155', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+            >
+              Flaky Server 500 (25%)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyScenarioPreset('LATENCY_2000')}
+              className="submit-btn"
+              style={{ flex: 1, minWidth: '150px', background: '#1e293b', border: '1px solid #334155', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+            >
+              Network Latency 2000ms
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={handleCreateScenario} className="ingest-form" style={{ marginBottom: '1.5rem' }}>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label htmlFor="scenarioNameInput">Scenario Name:</label>
+              <input
+                id="scenarioNameInput"
+                type="text"
+                placeholder="e.g. Auth 401 Failure"
+                value={scenarioName}
+                onChange={(e) => setScenarioName(e.target.value)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 2 }}>
+              <label htmlFor="scenarioPathInput">Path Pattern:</label>
+              <input
+                id="scenarioPathInput"
+                type="text"
+                placeholder="e.g. /users or /users/*"
+                value={scenarioPath}
+                onChange={(e) => setScenarioPath(e.target.value)}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="scenarioMethodSelect">Method:</label>
+              <select
+                id="scenarioMethodSelect"
+                value={scenarioMethod}
+                onChange={(e) => setScenarioMethod(e.target.value)}
+                style={{ padding: '0.65rem', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155' }}
+              >
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+                <option value="ALL">ALL (Any)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label htmlFor="scenarioActionSelect">Scenario Action:</label>
+              <select
+                id="scenarioActionSelect"
+                value={scenarioAction}
+                onChange={(e) => setScenarioAction(e.target.value as 'FORCE_STATUS' | 'DELAY' | 'RANDOM_FAILURE')}
+                style={{ padding: '0.65rem', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155' }}
+              >
+                <option value="FORCE_STATUS">FORCE_STATUS (Inject Error Code)</option>
+                <option value="DELAY">DELAY (Inject Latency)</option>
+                <option value="RANDOM_FAILURE">RANDOM_FAILURE (Probabilistic Failure)</option>
+              </select>
+            </div>
+
+            {scenarioAction === 'FORCE_STATUS' && (
+              <div className="form-group" style={{ flex: 1 }}>
+                <label htmlFor="scenarioStatusCode">Status Code:</label>
+                <input
+                  id="scenarioStatusCode"
+                  type="number"
+                  min={100}
+                  max={599}
+                  value={scenarioStatusCode}
+                  onChange={(e) => setScenarioStatusCode(parseInt(e.target.value, 10) || 500)}
+                />
+              </div>
+            )}
+
+            {scenarioAction === 'DELAY' && (
+              <div className="form-group" style={{ flex: 1 }}>
+                <label htmlFor="scenarioDelayMs">Delay (ms):</label>
+                <input
+                  id="scenarioDelayMs"
+                  type="number"
+                  min={0}
+                  max={30000}
+                  value={scenarioDelayMs}
+                  onChange={(e) => setScenarioDelayMs(parseInt(e.target.value, 10) || 0)}
+                />
+              </div>
+            )}
+
+            {scenarioAction === 'RANDOM_FAILURE' && (
+              <>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label htmlFor="scenarioProbStatusCode">Status Code:</label>
+                  <input
+                    id="scenarioProbStatusCode"
+                    type="number"
+                    min={100}
+                    max={599}
+                    value={scenarioStatusCode}
+                    onChange={(e) => setScenarioStatusCode(parseInt(e.target.value, 10) || 500)}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label htmlFor="scenarioProbability">Probability %:</label>
+                  <input
+                    id="scenarioProbability"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={scenarioProbability}
+                    onChange={(e) => setScenarioProbability(parseInt(e.target.value, 10) || 0)}
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="scenarioMaxExec">Max Execs:</label>
+              <input
+                id="scenarioMaxExec"
+                type="text"
+                placeholder="Optional (e.g. 5)"
+                value={scenarioMaxExecutions}
+                onChange={(e) => setScenarioMaxExecutions(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <button type="submit" disabled={scenarioLoading || !runtimeId || !projectId} className="submit-btn">
+            {scenarioLoading ? 'Creating Scenario...' : 'Create Scenario Rule'}
+          </button>
+        </form>
+
+        {scenarioStatus && (
+          <div className={`status-box ${scenarioStatus.startsWith('Success') ? 'success' : 'alert'}`}>
+            {scenarioStatus}
+          </div>
+        )}
+
+        <div style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <h3 style={{ fontSize: '1rem', margin: 0 }}>Active Scenarios for Runtime</h3>
+            <button
+              type="button"
+              onClick={() => fetchScenarios(projectId, runtimeId, jwtToken)}
+              disabled={!projectId || !runtimeId}
+              style={{ background: 'transparent', border: '1px solid #334155', color: '#94a3b8', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+            >
+              &circlearrowright; Refresh
+            </button>
+          </div>
+
+          {scenarios.length === 0 ? (
+            <p style={{ fontSize: '0.85rem', color: '#64748b' }}>No scenarios configured for this runtime yet.</p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #334155', textAlign: 'left', color: '#94a3b8' }}>
+                    <th style={{ padding: '0.5rem' }}>Name</th>
+                    <th style={{ padding: '0.5rem' }}>Match Target</th>
+                    <th style={{ padding: '0.5rem' }}>Action</th>
+                    <th style={{ padding: '0.5rem' }}>Execs</th>
+                    <th style={{ padding: '0.5rem' }}>Status</th>
+                    <th style={{ padding: '0.5rem' }}>Controls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scenarios.map((sc) => (
+                    <tr key={sc.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.5rem' }}>
+                        <strong>{sc.name}</strong>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <code>{sc.httpMethod || 'ALL'} {sc.pathPattern}</code>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <span style={{
+                          padding: '0.15rem 0.4rem',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          background: sc.action === 'FORCE_STATUS' ? '#7f1d1d' : sc.action === 'DELAY' ? '#78350f' : '#312e81',
+                          color: '#fff'
+                        }}>
+                          {sc.action} {sc.statusCode ? `(${sc.statusCode})` : ''} {sc.delayMs ? `(${sc.delayMs}ms)` : ''} {sc.probabilityPercent ? `(${sc.probabilityPercent}%)` : ''}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        {sc.executionCount} / {sc.maxExecutions ? sc.maxExecutions : '∞'}
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <span style={{
+                          padding: '0.15rem 0.4rem',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 'bold',
+                          background: sc.status === 'ACTIVE' ? '#065f46' : '#334155',
+                          color: '#fff'
+                        }}>
+                          {sc.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <div style={{ display: 'flex', gap: '0.3rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleScenario(sc.id, sc.status)}
+                            style={{
+                              background: sc.status === 'ACTIVE' ? '#475569' : '#059669',
+                              border: 'none',
+                              color: '#fff',
+                              padding: '0.2rem 0.5rem',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            {sc.status === 'ACTIVE' ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteScenario(sc.id)}
+                            style={{
+                              background: '#dc2626',
+                              border: 'none',
+                              color: '#fff',
+                              padding: '0.2rem 0.5rem',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="card ingest-card">
+        <h2>6. Live Mock Request Dispatcher Tester</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
           Execute public HTTP calls directly against <code>/mock/&#123;runtimeId&#125;</code> and observe stateful responses.
         </p>

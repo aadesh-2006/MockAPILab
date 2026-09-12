@@ -9,6 +9,7 @@
 [![State Store](https://img.shields.io/badge/State%20Store-Redis%207%20%7C%20In--Memory-red.svg)](backend/src/main/java/com/mockapilab/modules/runtime/state/)
 [![Event Streaming](https://img.shields.io/badge/Event%20Streaming-Apache%20Kafka%203.7%20%28KRaft%29-red.svg)](backend/src/main/java/com/mockapilab/modules/runtime/messaging/)
 [![AI Engine](https://img.shields.io/badge/AI%20Engine-Gemini%20Contract%20Extraction-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/ai/)
+[![Scenario Engine](https://img.shields.io/badge/Scenario%20Engine-Interactive%20Failure%20Injector-darkred.svg)](backend/src/main/java/com/mockapilab/modules/scenario/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
 [![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
 [![Data Engine](https://img.shields.io/badge/Data%20Engine-Deterministic%20Realistic%20Generator-teal.svg)](backend/src/main/java/com/mockapilab/modules/runtime/generation/)
@@ -20,6 +21,7 @@
 **MockAPILab** is a developer productivity platform that transforms API contracts, OpenAPI specifications, informal natural-language API descriptions, or Spring Boot controller/model source code into a locally runnable, realistic, and **stateful** mock backend. 
 
 Unlike traditional static mock servers that only return fixed JSON fixtures, MockAPILab:
+- Injects dynamic scenarios and failure policies (**forced status codes 401/429/500**, **bounded latency delays**, and **probabilistic random failures**) without modifying underlying contracts or mutating Redis state.
 - Extracts high-fidelity candidate contracts from plain text or Spring Boot code using **Gemini AI**, deterministically validated and normalized before persistence.
 - Maintains shared, high-performance mock state across instances backed by **Redis 7** (with in-memory fallback for testing).
 - Dispatches heavy mock collection generation asynchronously via **Apache Kafka (KRaft)** to dedicated background workers (`HTTP 202 Accepted`).
@@ -36,10 +38,11 @@ Modern development teams frequently face blocking dependencies between frontend 
 
 - **Backend Bottlenecks:** Frontend teams are delayed waiting for backend APIs to be designed, deployed, and stabilized.
 - **Unrealistic Static Mocks:** Existing mocking tools return static, stateless fixtures. They fail to test real-world scenarios such as entity mutation, schema validation failures, or resource lifecycles.
+- **Untested Failure Paths:** Testing frontend resilience against 401 auth failures, 429 rate limits, slow network delays, or intermittent 500 errors is painful without flexible scenario injection.
 - **Contract Drift & Informal Specs:** Writing OpenAPI YAML by hand from scratch or from informal specs is slow and error-prone.
 - **Manual Data Seeding & Slow HTTP Generations:** Crafting realistic mock datasets manually is tedious, while synchronous generation of large collections causes HTTP connection timeouts.
 
-**MockAPILab bridges this gap** by combining AI-assisted contract extraction with dynamic in-process mock backends, Redis-backed shared state, and Kafka-powered asynchronous background generation jobs.
+**MockAPILab bridges this gap** by combining interactive scenario failure injection with AI-assisted contract extraction, dynamic in-process mock backends, Redis-backed shared state, and Kafka-powered asynchronous background generation jobs.
 
 ---
 
@@ -50,7 +53,7 @@ MockAPILab is built as a clean **Modular Monolith** designed for high throughput
 ```mermaid
 flowchart TD
     subgraph Client ["Client Layer"]
-        UI["React + TypeScript UI\n(Management, AI Extraction & Mock Studio)"]
+        UI["React + TypeScript UI\n(Management, Scenario Studio & Mock Gateway)"]
         DevApp["Frontend App Under Dev\n(Calling Mock Endpoints)"]
     end
 
@@ -60,6 +63,7 @@ flowchart TD
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser & Normalizer)"]
         AiModule["AI Engine (Gemini Extraction & Validator)"]
+        ScenarioEngine["Scenario Engine & Failure Injector\n(Precedence Matching & Atomic Limits)"]
         RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
         JobService["GenerationJobService (Queue & Status API)"]
         KafkaWorker["GenerationJobConsumer (Worker)"]
@@ -76,11 +80,11 @@ flowchart TD
     end
 
     subgraph Infrastructure ["Infrastructure Layer"]
-        PG[("PostgreSQL 16 (System of Record)\nUsers, Projects, Contracts JSONB, Runtimes, Generation Jobs")]
+        PG[("PostgreSQL 16 (System of Record)\nUsers, Projects, Contracts JSONB, Runtimes, Scenarios, Jobs")]
         RedisStore[("Redis 7\n(Shared Live Mutable Mock State)")]
     end
 
-    UI -->|Authenticate, Ingest Contracts, Run AI Extraction, Start Runtimes| API
+    UI -->|Authenticate, Ingest Contracts, Run AI Extraction, Start Runtimes, Configure Scenarios| API
     UI -->|Submit Generation Job (202) & Poll Status| API
     DevApp -->|Execute Public Mock Requests| RuntimeEngine
 
@@ -89,6 +93,10 @@ flowchart TD
     API --> ContractModule
     API --> RuntimeEngine
     API --> JobService
+
+    RuntimeEngine -->|1. Evaluate Request Policy| ScenarioEngine
+    ScenarioEngine -->|Short-Circuit 4xx/5xx or Delay| RuntimeEngine
+    ScenarioEngine -->|Atomic Count Reservation| PG
 
     ContractModule -->|AI Extraction Request| AiModule
     AiModule -->|Generate Candidate Contract| GeminiAPI
@@ -127,6 +135,13 @@ com.mockapilab
         +-- provider/       # AiProvider interface, GeminiAiProvider (RestClient)
         +-- service/        # AiService (orchestrates prompt, provider, validator, converter)
         +-- validation/     # AiCandidateValidator (deterministic schema & path validation)
+    +-- scenario/           # Interactive Scenario Engine & Failure Injector subsystem
+        +-- controller/     # Scenario REST APIs (/scenarios, /enable, /disable)
+        +-- dto/            # ScenarioRequest, ScenarioResponse
+        +-- engine/         # ScenarioEngine (4-tier precedence matcher, atomic reservation)
+        +-- model/          # Scenario entity, ScenarioStatus, ScenarioAction
+        +-- repository/     # ScenarioRepository (atomic CAS update queries)
+        +-- service/        # ScenarioService (CRUD, parameter validation, workspace isolation)
     +-- runtime/            # Stateful Mock Runtime subsystem
         +-- controller/     # Mock Gateway (/mock/{runtimeId}/**), runtime controls, generation job API
         +-- engine/         # Route compilation, regex dispatch, OpenAPI request validation
@@ -137,26 +152,29 @@ com.mockapilab
         +-- model/          # MockRuntime and GenerationJob entities
         +-- repository/     # MockRuntimeRepository and GenerationJobRepository
         +-- service/        # RuntimeService and GenerationJobService
-    +-- scenario/           # Multi-step stateful workflows & sequence conditions (Future)
 ```
 
 ### 4.2 Core Features
 1. **Stateless JWT Security:** Strong authentication with BCrypt hashing and server-enforced workspace authorization.
 2. **Canonical Contract Model (`NormalizedContract`):** Decouples external API contract formats (OpenAPI 3.0/3.1, YAML/JSON, Natural Language, Spring Boot code) from runtime execution.
-3. **Gemini AI-Assisted Contract Extraction:**
+3. **Interactive Scenario Engine & Failure Injector:**
+   - Evaluates active rules before route execution with strict 4-tier precedence matching.
+   - `FORCE_STATUS`: Returns structured 4xx/5xx error JSON and bypasses route execution—Redis state remains strictly unmutated.
+   - `DELAY`: Injects bounded latency (up to 30,000 ms) before executing normal mock behavior.
+   - `RANDOM_FAILURE`: Evaluates independent request probability using `ThreadLocalRandom`.
+   - `maxExecutions`: Atomic database reservation preventing race conditions under concurrency without distributed locks.
+4. **Gemini AI-Assisted Contract Extraction:**
    - Converts natural-language API specs or Spring Boot controller/model code into candidate contracts.
    - Deterministic structural and schema validation (`AiCandidateValidator`) prevents AI hallucinations from reaching live runtimes.
-   - Converts to canonical `NormalizedContract` and persists as versioned contract with source type `NATURAL_LANGUAGE` or `AI_CONTROLLER`.
-4. **In-Process Dynamic Route Dispatch:** Compiles normalized endpoints into prioritized regex matchers with specificity weighting.
-5. **Redis-Backed Shared State (`RedisRuntimeStateStore`):**
+5. **In-Process Dynamic Route Dispatch:** Compiles normalized endpoints into prioritized regex matchers with specificity weighting.
+6. **Redis-Backed Shared State (`RedisRuntimeStateStore`):**
    - Live mock state stored in Redis Hashes (`mockapi:runtime:{id}:collection:{path}`).
    - Registered collections tracked via Redis Sets (`mockapi:runtime:{id}:collections`).
    - Atomic field operations (`HSET`, `HGET`, `HDEL`, `HLEN`, `HGETALL`).
-6. **Kafka-Powered Asynchronous Mock Data Generation:**
+7. **Kafka-Powered Asynchronous Mock Data Generation:**
    - Generation endpoints return `HTTP 202 Accepted` with durable `GenerationJob` tracking in PostgreSQL.
    - Decoupled worker processing via Kafka topic `mockapi.generation.jobs`.
    - Built-in idempotency protecting against duplicate deliveries.
-   - Seed reproducibility exposed in `effectiveSeed`.
 
 ---
 
@@ -182,12 +200,19 @@ com.mockapilab
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes` | Protected | List all mock runtimes in project |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Get runtime details and status |
 | **Runtimes** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/status` | Protected | Get live runtime statistics, entities count & uptime |
-| **Data Gen** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/data/generate` | Protected | **Queue asynchronous mock collection generation job (`HTTP 202`)** |
-| **Data Gen** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/generation-jobs/{jobId}` | Protected | **Get generation job status & metadata** |
-| **Data Gen** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/generation-jobs` | Protected | **List all generation jobs for runtime** |
+| **Scenarios**| `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios` | Protected | **Create scenario / failure injection rule (`HTTP 201`)** |
+| **Scenarios**| `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios` | Protected | **List all scenarios for a mock runtime** |
+| **Scenarios**| `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios/{scenarioId}` | Protected | **Get scenario details by ID** |
+| **Scenarios**| `PUT` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios/{scenarioId}` | Protected | **Update scenario rule configuration** |
+| **Scenarios**| `DELETE`| `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios/{scenarioId}` | Protected | **Delete scenario rule** |
+| **Scenarios**| `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios/{scenarioId}/enable` | Protected | **Enable scenario rule** |
+| **Scenarios**| `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios/{scenarioId}/disable`| Protected | **Disable scenario rule** |
+| **Data Gen** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/data/generate` | Protected | Queue asynchronous mock collection generation job (`HTTP 202`) |
+| **Data Gen** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/generation-jobs/{jobId}` | Protected | Get generation job status & metadata |
+| **Data Gen** | `GET` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/generation-jobs` | Protected | List all generation jobs for runtime |
 | **Runtimes** | `POST` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}/stop` | Protected | Stop active mock runtime |
 | **Runtimes** | `DELETE` | `/api/v1/projects/{projectId}/runtimes/{runtimeId}` | Protected | Stop, clear state, and delete runtime |
-| **Mock Gateway** | `ALL` | `/mock/{runtimeId}/**` | **Public** | **Execute dynamic stateful mock API calls** |
+| **Mock Gateway** | `ALL` | `/mock/{runtimeId}/**` | **Public** | **Execute dynamic stateful mock API calls & scenarios** |
 
 ---
 
@@ -197,6 +222,7 @@ com.mockapilab
 |---|---|---|
 | **Core Backend** | Java 21, Spring Boot 3.4, Maven | Modular monolith backend runtime, REST API, mock engine |
 | **Security & Auth** | Spring Security 6, JJWT 0.12, BCrypt | Stateless JWT authentication, role & ownership authorization |
+| **Scenario Engine** | AntPathMatcher, Atomic CAS Updates | Interactive behavior policy and failure injection layer |
 | **AI Contract Engine** | Google Gemini API, Spring `RestClient`, Jackson | Extract candidate contracts from natural language & Spring Boot code |
 | **Contract Engine** | SwaggerParser 2.1, Jackson YAML, SpringDoc OpenAPI | OpenAPI 3.x parser, validation, schema normalizer, Swagger UI |
 | **Mock Runtime** | Dynamic Regex Compiler, Schema Validator | Stateful REST simulation, route dispatch engine |
@@ -205,10 +231,10 @@ com.mockapilab
 | **Fallback State** | In-Memory `ConcurrentHashMap` + `LinkedHashMap` | Fast thread-safe isolated state store for test profiles |
 | **Data Engine** | Seedable PRNG, Curated Reference Sets | Deterministic realistic data generation engine |
 | **Database & ORM** | PostgreSQL 16, Spring Data JPA, Hibernate (JSONB) | Relational persistence + JSONB contracts + durable generation jobs |
-| **Schema Migrations**| Flyway Migration Engine | Deterministic database migrations (`V1`, `V2`, `V3`, `V4`) |
-| **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, AI extraction, runtime control & job tracker |
+| **Schema Migrations**| Flyway Migration Engine | Deterministic database migrations (`V1`, `V2`, `V3`, `V4`, `V5`) |
+| **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, Scenario Studio, AI extraction & runtime controls |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (110 tests) |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (129 tests) |
 
 ---
 
@@ -271,7 +297,17 @@ com.mockapilab
 - [x] Implemented synchronous ingestion endpoint `POST /api/v1/projects/{projectId}/contracts/ai-extract` (`HTTP 201 Created`).
 - [x] Added comprehensive error handling for missing keys and provider failures (`HTTP 503 Service Unavailable`).
 - [x] Updated React UI with natural-language and Spring Boot controller extraction studio and presets.
-- [x] Created comprehensive automated test suite (110 tests total, 100% pass rate).
+
+### ✅ Milestone 9: Interactive Scenario Engine & Failure Injector (Complete)
+- [x] Created Flyway migration `V5__init_scenarios.sql` and `Scenario` JPA domain entity.
+- [x] Implemented `ScenarioEngine` with deterministic 4-tier precedence matching and OpenAPI/wildcard template support.
+- [x] Implemented `FORCE_STATUS` action with structured error responses and verified state preservation (zero Redis mutations).
+- [x] Implemented `DELAY` action with bounded latency (<= 30 seconds).
+- [x] Implemented `RANDOM_FAILURE` action with independent request probability.
+- [x] Enforced atomic concurrency execution counting (`maxExecutions`) via database CAS update queries without distributed locks.
+- [x] Implemented authenticated scenario management REST APIs with workspace owner isolation.
+- [x] Built React Scenario Studio with preset switchers (Auth 401, Rate Limit 429, Flaky Server 500, Latency 2000ms).
+- [x] Created comprehensive automated test suite (129 tests total, 100% pass rate).
 
 ---
 
@@ -295,7 +331,7 @@ com.mockapilab
 +-------------------------------------------------------------+
 │ Milestone 8: Gemini AI Contract Extraction (Complete)       │
 +-------------------------------------------------------------+
-│ Milestone 9: Interactive Scenario Engine & Failure Injector │
+│ Milestone 9: Interactive Scenario Engine (Complete)         │
 +-------------------------------------------------------------+
 ```
 
