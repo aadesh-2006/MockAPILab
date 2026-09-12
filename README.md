@@ -8,6 +8,7 @@
 [![Database](https://img.shields.io/badge/database-PostgreSQL%2016%20%7C%20JSONB%20%7C%20Flyway-blue.svg)](backend/src/main/resources/db/migration/)
 [![State Store](https://img.shields.io/badge/State%20Store-Redis%207%20%7C%20In--Memory-red.svg)](backend/src/main/java/com/mockapilab/modules/runtime/state/)
 [![Event Streaming](https://img.shields.io/badge/Event%20Streaming-Apache%20Kafka%203.7%20%28KRaft%29-red.svg)](backend/src/main/java/com/mockapilab/modules/runtime/messaging/)
+[![AI Engine](https://img.shields.io/badge/AI%20Engine-Gemini%20Contract%20Extraction-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/ai/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
 [![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
 [![Data Engine](https://img.shields.io/badge/Data%20Engine-Deterministic%20Realistic%20Generator-teal.svg)](backend/src/main/java/com/mockapilab/modules/runtime/generation/)
@@ -16,9 +17,10 @@
 
 ## 1. What is MockAPILab?
 
-**MockAPILab** is a developer productivity platform that transforms API contracts, OpenAPI specifications, or backend controller/model definitions into a locally runnable, realistic, and **stateful** mock backend. 
+**MockAPILab** is a developer productivity platform that transforms API contracts, OpenAPI specifications, informal natural-language API descriptions, or Spring Boot controller/model source code into a locally runnable, realistic, and **stateful** mock backend. 
 
 Unlike traditional static mock servers that only return fixed JSON fixtures, MockAPILab:
+- Extracts high-fidelity candidate contracts from plain text or Spring Boot code using **Gemini AI**, deterministically validated and normalized before persistence.
 - Maintains shared, high-performance mock state across instances backed by **Redis 7** (with in-memory fallback for testing).
 - Dispatches heavy mock collection generation asynchronously via **Apache Kafka (KRaft)** to dedicated background workers (`HTTP 202 Accepted`).
 - Executes realistic multi-step REST CRUD lifecycles (`POST` $\rightarrow$ `GET collection` $\rightarrow$ `GET item` $\rightarrow$ `PUT` $\rightarrow$ `DELETE` $\rightarrow$ `404`).
@@ -34,10 +36,10 @@ Modern development teams frequently face blocking dependencies between frontend 
 
 - **Backend Bottlenecks:** Frontend teams are delayed waiting for backend APIs to be designed, deployed, and stabilized.
 - **Unrealistic Static Mocks:** Existing mocking tools return static, stateless fixtures. They fail to test real-world scenarios such as entity mutation, schema validation failures, or resource lifecycles.
-- **Contract Drift:** Hand-written mock configurations drift rapidly from changing backend specifications.
+- **Contract Drift & Informal Specs:** Writing OpenAPI YAML by hand from scratch or from informal specs is slow and error-prone.
 - **Manual Data Seeding & Slow HTTP Generations:** Crafting realistic mock datasets manually is tedious, while synchronous generation of large collections causes HTTP connection timeouts.
 
-**MockAPILab bridges this gap** by compiling ingested contracts into dynamic in-process mock backends with stateful CRUD semantics, Redis-backed shared state, and Kafka-powered asynchronous background generation jobs.
+**MockAPILab bridges this gap** by combining AI-assisted contract extraction with dynamic in-process mock backends, Redis-backed shared state, and Kafka-powered asynchronous background generation jobs.
 
 ---
 
@@ -48,7 +50,7 @@ MockAPILab is built as a clean **Modular Monolith** designed for high throughput
 ```mermaid
 flowchart TD
     subgraph Client ["Client Layer"]
-        UI["React + TypeScript UI\n(Management & Mock Studio)"]
+        UI["React + TypeScript UI\n(Management, AI Extraction & Mock Studio)"]
         DevApp["Frontend App Under Dev\n(Calling Mock Endpoints)"]
     end
 
@@ -57,11 +59,16 @@ flowchart TD
         AuthModule["Auth & Security Engine (JWT)"]
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser & Normalizer)"]
+        AiModule["AI Engine (Gemini Extraction & Validator)"]
         RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
         JobService["GenerationJobService (Queue & Status API)"]
         KafkaWorker["GenerationJobConsumer (Worker)"]
         DataEngine["Realistic Deterministic Data Engine\n(Seedable PRNG & Schema Evaluator)"]
         StateStore["RuntimeStateStore Abstraction\n(Redis / In-Memory)"]
+    end
+
+    subgraph ExternalAI ["External AI Services"]
+        GeminiAPI["Google Gemini Generative Language API\n(gemini-1.5-flash / gemini-2.0-flash)"]
     end
 
     subgraph Messaging ["Messaging Layer"]
@@ -73,7 +80,7 @@ flowchart TD
         RedisStore[("Redis 7\n(Shared Live Mutable Mock State)")]
     end
 
-    UI -->|Authenticate, Ingest Contracts, Start Runtimes| API
+    UI -->|Authenticate, Ingest Contracts, Run AI Extraction, Start Runtimes| API
     UI -->|Submit Generation Job (202) & Poll Status| API
     DevApp -->|Execute Public Mock Requests| RuntimeEngine
 
@@ -82,6 +89,10 @@ flowchart TD
     API --> ContractModule
     API --> RuntimeEngine
     API --> JobService
+
+    ContractModule -->|AI Extraction Request| AiModule
+    AiModule -->|Generate Candidate Contract| GeminiAPI
+    AiModule -->|Validate & Normalize Candidate| ContractModule
 
     JobService -->|1. Persist QUEUED Job| PG
     JobService -->|2. Dispatch Event| KafkaTopic
@@ -105,7 +116,17 @@ com.mockapilab
 +-- modules/
     +-- auth/               # User registration, login, JWT validation, UserPrincipal
     +-- project/            # Workspace isolation, ownership verification, project CRUD
-    +-- contract/           # OpenAPI 3.x parser, NormalizedContract model, JSONB storage
+    +-- contract/           # OpenAPI 3.x parser, NormalizedContract model, JSONB storage, AI ingestion
+    +-- ai/                 # Gemini AI-assisted contract extraction subsystem
+        +-- config/         # AiProperties (gemini.api-key, model, timeout)
+        +-- converter/      # AiCandidateConverter (transforms candidate to NormalizedContract)
+        +-- dto/            # AiExtractContractRequest/Response, ExtractionInputType
+        +-- exception/      # AiConfigurationException, AiProviderException
+        +-- model/          # AiCandidateContract, Endpoint, Parameter, RequestBody, Schema
+        +-- prompt/         # AiExtractionPromptBuilder (structured schema prompts)
+        +-- provider/       # AiProvider interface, GeminiAiProvider (RestClient)
+        +-- service/        # AiService (orchestrates prompt, provider, validator, converter)
+        +-- validation/     # AiCandidateValidator (deterministic schema & path validation)
     +-- runtime/            # Stateful Mock Runtime subsystem
         +-- controller/     # Mock Gateway (/mock/{runtimeId}/**), runtime controls, generation job API
         +-- engine/         # Route compilation, regex dispatch, OpenAPI request validation
@@ -117,18 +138,21 @@ com.mockapilab
         +-- repository/     # MockRuntimeRepository and GenerationJobRepository
         +-- service/        # RuntimeService and GenerationJobService
     +-- scenario/           # Multi-step stateful workflows & sequence conditions (Future)
-    +-- ai/                 # Gemini contract extraction & schema inference (Future)
 ```
 
 ### 4.2 Core Features
 1. **Stateless JWT Security:** Strong authentication with BCrypt hashing and server-enforced workspace authorization.
-2. **Canonical Contract Model (`NormalizedContract`):** Decouples external API contract formats (OpenAPI 3.0/3.1, YAML/JSON) from runtime execution.
-3. **In-Process Dynamic Route Dispatch:** Compiles normalized endpoints into prioritized regex matchers with specificity weighting.
-4. **Redis-Backed Shared State (`RedisRuntimeStateStore`):**
+2. **Canonical Contract Model (`NormalizedContract`):** Decouples external API contract formats (OpenAPI 3.0/3.1, YAML/JSON, Natural Language, Spring Boot code) from runtime execution.
+3. **Gemini AI-Assisted Contract Extraction:**
+   - Converts natural-language API specs or Spring Boot controller/model code into candidate contracts.
+   - Deterministic structural and schema validation (`AiCandidateValidator`) prevents AI hallucinations from reaching live runtimes.
+   - Converts to canonical `NormalizedContract` and persists as versioned contract with source type `NATURAL_LANGUAGE` or `AI_CONTROLLER`.
+4. **In-Process Dynamic Route Dispatch:** Compiles normalized endpoints into prioritized regex matchers with specificity weighting.
+5. **Redis-Backed Shared State (`RedisRuntimeStateStore`):**
    - Live mock state stored in Redis Hashes (`mockapi:runtime:{id}:collection:{path}`).
    - Registered collections tracked via Redis Sets (`mockapi:runtime:{id}:collections`).
    - Atomic field operations (`HSET`, `HGET`, `HDEL`, `HLEN`, `HGETALL`).
-5. **Kafka-Powered Asynchronous Mock Data Generation:**
+6. **Kafka-Powered Asynchronous Mock Data Generation:**
    - Generation endpoints return `HTTP 202 Accepted` with durable `GenerationJob` tracking in PostgreSQL.
    - Decoupled worker processing via Kafka topic `mockapi.generation.jobs`.
    - Built-in idempotency protecting against duplicate deliveries.
@@ -149,6 +173,7 @@ com.mockapilab
 | **Projects** | `PUT` | `/api/v1/projects/{id}` | Protected | Update project name / description (owner only) |
 | **Projects** | `DELETE` | `/api/v1/projects/{id}` | Protected | Delete project workspace (owner only) |
 | **Contracts**| `POST` | `/api/v1/projects/{projectId}/contracts` | Protected | Ingest OpenAPI 3.x contract & create version 1 |
+| **Contracts**| `POST` | `/api/v1/projects/{projectId}/contracts/ai-extract` | Protected | **Extract candidate contract via Gemini AI & ingest (`HTTP 201`)** |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts` | Protected | List contracts belonging to project (owner only) |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}` | Protected | Get contract details & latest version stats |
 | **Contracts**| `GET` | `/api/v1/projects/{projectId}/contracts/{contractId}/versions` | Protected | List all versions for a contract |
@@ -172,6 +197,7 @@ com.mockapilab
 |---|---|---|
 | **Core Backend** | Java 21, Spring Boot 3.4, Maven | Modular monolith backend runtime, REST API, mock engine |
 | **Security & Auth** | Spring Security 6, JJWT 0.12, BCrypt | Stateless JWT authentication, role & ownership authorization |
+| **AI Contract Engine** | Google Gemini API, Spring `RestClient`, Jackson | Extract candidate contracts from natural language & Spring Boot code |
 | **Contract Engine** | SwaggerParser 2.1, Jackson YAML, SpringDoc OpenAPI | OpenAPI 3.x parser, validation, schema normalizer, Swagger UI |
 | **Mock Runtime** | Dynamic Regex Compiler, Schema Validator | Stateful REST simulation, route dispatch engine |
 | **Live State Store** | Redis 7, Spring Data Redis (`StringRedisTemplate`) | Shared live mutable mock entity store & collection index |
@@ -180,9 +206,9 @@ com.mockapilab
 | **Data Engine** | Seedable PRNG, Curated Reference Sets | Deterministic realistic data generation engine |
 | **Database & ORM** | PostgreSQL 16, Spring Data JPA, Hibernate (JSONB) | Relational persistence + JSONB contracts + durable generation jobs |
 | **Schema Migrations**| Flyway Migration Engine | Deterministic database migrations (`V1`, `V2`, `V3`, `V4`) |
-| **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, contract ingestion, runtime control & job tracker |
+| **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, AI extraction, runtime control & job tracker |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (87 tests) |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (110 tests) |
 
 ---
 
@@ -237,7 +263,15 @@ com.mockapilab
 - [x] Implemented job status (`GET .../generation-jobs/{jobId}`) and list (`GET .../generation-jobs`) APIs with project ownership checks.
 - [x] Built consumer-level idempotency ignoring duplicate deliveries for terminal `COMPLETED` and `FAILED` jobs.
 - [x] Updated React UI with live status badge polling and background job tracking.
-- [x] Created comprehensive automated test suite (87 tests total, 100% pass rate).
+
+### ✅ Milestone 8: Gemini AI-Assisted Contract Extraction (Complete)
+- [x] Designed candidate contract domain model (`AiCandidateContract`, `AiCandidateEndpoint`, `AiCandidateSchema`).
+- [x] Implemented pluggable `AiProvider` with `GeminiAiProvider` invoking Gemini Generative Language REST API.
+- [x] Built strict deterministic validator (`AiCandidateValidator`) and converter (`AiCandidateConverter`) to `NormalizedContract`.
+- [x] Implemented synchronous ingestion endpoint `POST /api/v1/projects/{projectId}/contracts/ai-extract` (`HTTP 201 Created`).
+- [x] Added comprehensive error handling for missing keys and provider failures (`HTTP 503 Service Unavailable`).
+- [x] Updated React UI with natural-language and Spring Boot controller extraction studio and presets.
+- [x] Created comprehensive automated test suite (110 tests total, 100% pass rate).
 
 ---
 
@@ -259,7 +293,9 @@ com.mockapilab
 +-------------------------------------------------------------+
 │ Milestone 7: Kafka + Asynchronous Generation Jobs (Complete)│
 +-------------------------------------------------------------+
-│ Milestone 8: Interactive Scenario Engine & Failure Injector │
+│ Milestone 8: Gemini AI Contract Extraction (Complete)       │
++-------------------------------------------------------------+
+│ Milestone 9: Interactive Scenario Engine & Failure Injector │
 +-------------------------------------------------------------+
 ```
 
@@ -278,7 +314,7 @@ Copy the template environment file:
 ```bash
 cp .env.example .env
 ```
-Ensure `JWT_SECRET` is set to a secure string of at least 32 characters.
+Set your environment variables (e.g. `JWT_SECRET`, and optionally `GEMINI_API_KEY` for AI contract extraction).
 
 ### Running Backend Tests
 ```bash

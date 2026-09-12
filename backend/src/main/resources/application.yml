@@ -1,4 +1,4 @@
-﻿server:
+server:
   port: ${SERVER_PORT:8080}
   servlet:
     context-path: /
@@ -55,6 +55,12 @@ mockapilab:
       auto-startup: ${KAFKA_CONSUMER_AUTO_STARTUP:true}
     topics:
       generation-jobs: ${KAFKA_GENERATION_JOBS_TOPIC:mockapi.generation.jobs}
+  ai:
+    gemini:
+      api-key: ${GEMINI_API_KEY:}
+      model: ${GEMINI_MODEL:gemini-1.5-flash}
+      timeout-seconds: ${GEMINI_TIMEOUT_SECONDS:30}
+      base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
 
 management:
   endpoints:

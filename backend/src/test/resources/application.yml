@@ -34,6 +34,12 @@ mockapilab:
       auto-startup: false
     topics:
       generation-jobs: mockapi.generation.jobs.test
+  ai:
+    gemini:
+      api-key: test-gemini-mock-api-key
+      model: gemini-1.5-flash
+      timeout-seconds: 5
+      base-url: http://localhost:9999/gemini-mock
 
 logging:
   level:

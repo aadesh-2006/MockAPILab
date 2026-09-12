@@ -31,7 +31,16 @@ com.mockapilab
         +-- repository/     # MockRuntimeRepository and GenerationJobRepository
         +-- service/        # RuntimeService and GenerationJobService
     +-- scenario/           # Stateful workflows, sequences, and rule conditions (Future)
-    +-- ai/                 # Gemini-assisted schema ingestion & contract extraction (Future)
+    +-- ai/                 # Gemini AI-assisted contract extraction & normalization engine (M8)
+        +-- config/         # AiProperties (gemini api-key, model, timeouts)
+        +-- converter/      # AiCandidateConverter (maps candidate AST to NormalizedContract)
+        +-- dto/            # AiExtractContractRequest, AiExtractContractResponse, ExtractionInputType
+        +-- exception/      # AiConfigurationException, AiProviderException
+        +-- model/candidate/# AiCandidateContract, AiCandidateEndpoint, AiCandidateSchema
+        +-- prompt/         # AiExtractionPromptBuilder (structured system/user prompts)
+        +-- provider/       # AiProvider interface & GeminiAiProvider (Google Generative Language REST)
+        +-- service/        # AiService (orchestrates extraction -> validation -> normalization)
+        +-- validation/     # AiCandidateValidator (deterministic schema & route validator)
 ```
 
 ---
@@ -287,45 +296,123 @@ Kafka at-least-once delivery semantics can deliver duplicate events. `Generation
 
 ---
 
-## 8. Architectural Decision Records (ADRs)
+## 8. Gemini AI-Assisted Contract Extraction Engine
 
-### 8.1 Stateless JWT Authentication (ADR-001)
-Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+### 8.1 Architecture & Boundaries
+The AI contract extraction module bridges informal developer input (natural-language API specifications or raw Spring Boot controller/model source code) and MockAPILab's core canonical contract engine.
 
-### 8.2 Strong Password Hashing (ADR-002)
-BCrypt with salting (`BCryptPasswordEncoder`).
+```
+┌───────────────────────────────────────────────────────────┐
+│                     Extraction Flow                       │
+├───────────────────────────────────────────────────────────┤
+│ 1. Client (Developer UI / REST Client)                    │
+│    POST /api/v1/projects/{projectId}/contracts/ai-extract │
+│    Payload: { name, inputType, content }                  │
+│    │                                                      │
+│    ▼                                                      │
+│ 2. ContractController (Auth & Workspace Verification)     │
+│    │                                                      │
+│    ▼                                                      │
+│ 3. AiService.extractAndNormalize(inputType, content)     │
+│    │                                                      │
+│    ├─► 4. AiExtractionPromptBuilder                       │
+│    │      Constructs structured extraction prompt         │
+│    │                                                      │
+│    ├─► 5. AiProvider (GeminiAiProvider)                   │
+│    │      Invokes Gemini Generative Language REST API     │
+│    │      Parses JSON into AiCandidateContract            │
+│    │                                                      │
+│    ├─► 6. AiCandidateValidator                           │
+│    │      Deterministic structural & schema validation    │
+│    │                                                      │
+│    └─► 7. AiCandidateConverter                           │
+│           Transforms candidate to NormalizedContract      │
+│    │                                                      │
+│    ▼                                                      │
+│ 8. ContractService.createVersionedContract(...)           │
+│    Persists Contract + ContractVersion (SoR: PostgreSQL)  │
+│    (sourceType: NATURAL_LANGUAGE / AI_CONTROLLER)         │
+│    │                                                      │
+│    ▼                                                      │
+│ 9. Downstream Consumption                                 │
+│    M4 Runtimes / M5 Deterministic Gen / M6 Redis /        │
+│    M7 Kafka Async Jobs                                    │
+└───────────────────────────────────────────────────────────┘
+```
 
-### 8.3 Strict DTO Boundaries (ADR-003)
-All controller APIs expose and consume Java Record DTOs.
+### 8.2 Candidate Proposal vs Canonical Contract
+To maintain strict determinism and reliability:
+- **AI is an untrusted proposer:** Gemini extracts an intermediate representation (`AiCandidateContract`).
+- **Engine is the authority:** `AiCandidateValidator` checks HTTP methods, path format, path variable presence, schema property types, and `$ref` references. If validation fails, extraction is rejected before persistence.
+- **Canonical normalization:** `AiCandidateConverter` converts the validated candidate into the canonical `NormalizedContract`. Downstream systems (runtimes, data generators, job workers) interact *only* with `NormalizedContract`.
 
-### 8.4 Server-Side Workspace & Contract Isolation (ADR-004)
-All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+### 8.3 Untrusted Code Execution Policy
+Spring Boot controller source code submitted for AI extraction is treated strictly as plain text. The backend:
+- Never compiles the code.
+- Never dynamically classloads or invokes user classes.
+- Never executes user code in sandboxes or runtimes.
 
-### 8.5 Flyway Version-Controlled Migrations (ADR-005)
-Flyway scripts (`V1`, `V2`, `V3`, `V4`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+### 8.4 Pluggable AI Provider Abstraction
+The `AiProvider` interface decouples the extraction logic from specific LLM vendors:
+```java
+public interface AiProvider {
+    AiCandidateContract extractContract(String systemPrompt, String userPrompt);
+}
+```
+`GeminiAiProvider` implements `AiProvider` using Spring `RestClient` to call Gemini 1.5/2.0 models via standard REST protocols.
 
-### 8.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
-`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
-
-### 8.7 In-Process Stateful Mock Runtime Engine (ADR-007)
-Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
-
-### 8.8 Decoupled Deterministic Data Generation Engine (ADR-008)
-Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
-
-### 8.9 Redis-Backed Shared Runtime State Engine (ADR-009)
-`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
-
-### 8.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
-- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
-- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
+### 8.5 Failure Modes and HTTP Semantics
+1. **Missing or Unconfigured API Key:** Throws `AiConfigurationException` $\rightarrow$ HTTP 503 Service Unavailable (`AI_SERVICE_UNAVAILABLE`).
+2. **Provider Timeout / Rate Limit / HTTP Error:** Throws `AiProviderException` $\rightarrow$ HTTP 503 Service Unavailable (`AI_SERVICE_UNAVAILABLE`).
+3. **Invalid AI Output or Schema Validation Failure:** Throws `ValidationException` $\rightarrow$ HTTP 400 Bad Request (`VALIDATION_ERROR`).
+4. **Invalid Input Request:** Throws `ValidationException` $\rightarrow$ HTTP 400 Bad Request (`VALIDATION_ERROR`).
 
 ---
 
-## 9. Architectural Invariants
+## 9. Architectural Decision Records (ADRs)
+
+### 9.1 Stateless JWT Authentication (ADR-001)
+Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+
+### 9.2 Strong Password Hashing (ADR-002)
+BCrypt with salting (`BCryptPasswordEncoder`).
+
+### 9.3 Strict DTO Boundaries (ADR-003)
+All controller APIs expose and consume Java Record DTOs.
+
+### 9.4 Server-Side Workspace & Contract Isolation (ADR-004)
+All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+
+### 9.5 Flyway Version-Controlled Migrations (ADR-005)
+Flyway scripts (`V1`, `V2`, `V3`, `V4`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+
+### 9.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
+
+### 9.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+
+### 9.8 Decoupled Deterministic Data Generation Engine (ADR-008)
+Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
+
+### 9.9 Redis-Backed Shared Runtime State Engine (ADR-009)
+`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
+
+### 9.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
+- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
+- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
+
+### 9.11 Gemini AI-Assisted Contract Extraction (ADR-011)
+- **Decision:** Use Google Gemini Generative Language REST API via a pluggable `AiProvider` to extract candidate contracts (`AiCandidateContract`), followed by deterministic validation (`AiCandidateValidator`) and conversion into canonical `NormalizedContract`.
+- **Rationale:** Enables developers to quickly create mock APIs from informal natural-language specifications or existing Spring Boot controller code, without allowing AI hallucinations to directly dictate runtime execution or bypass schema validation.
+
+---
+
+## 10. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hidden State Mutations:** Read operations (`GET`) never mutate runtime state; population is performed via explicit REST APIs or stateful mutations (`POST`, `PUT`).
 3. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
 4. **Module Independence:** Business modules communicate through designated services and DTOs without cyclic dependencies.
 5. **Collection Index as Source of Truth:** Collection existence is governed strictly by the collection index set, maintaining stability even when entity count reaches zero.
 6. **Three-Tier Storage Separation:** PostgreSQL is the durable system of record; Kafka is the event backbone; Redis is the live mock state.
+7. **AI Proposes, Engine Disposes:** AI models propose candidate contracts (`AiCandidateContract`); only deterministically validated and converted `NormalizedContract` instances are persisted and executed. AI never directly accesses, executes, or mutates live runtimes.

@@ -112,6 +112,26 @@ components:
   const [ingestLoading, setIngestLoading] = useState(false)
   const [ingestedContractId, setIngestedContractId] = useState<string | null>(null)
 
+  // AI-Assisted Contract Extraction State (M8)
+  const [aiInputType, setAiInputType] = useState<'DESCRIPTION' | 'SPRING_BOOT_CODE'>('DESCRIPTION')
+  const [aiContractName, setAiContractName] = useState('AI Extracted Service')
+  const [aiInput, setAiInput] = useState(`Create a user management API.
+
+GET /users - Returns a list of users.
+GET /users/{id} - Returns one user by UUID id.
+POST /users - Creates a new user with name, email, phone, and role (enum: ADMIN, DEVELOPER, USER).
+DELETE /users/{id} - Deletes a user by UUID id.
+
+User model:
+id: uuid (required)
+name: string (required)
+email: email (required)
+phone: string
+role: enum [ADMIN, DEVELOPER, USER]`)
+  const [aiStatus, setAiStatus] = useState<string | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiExtractedSummary, setAiExtractedSummary] = useState<{ endpoints: number; schemas: number; title: string } | null>(null)
+
   // Runtime State (M4/M6)
   const [runtimeId, setRuntimeId] = useState('')
   const [runtimeStatus, setRuntimeStatus] = useState<string | null>(null)
@@ -190,6 +210,105 @@ components:
       setIngestStatus(`Network Error: ${errorMessage}`)
     } finally {
       setIngestLoading(false)
+    }
+  }
+
+  const handleSwitchAiPreset = (type: 'DESCRIPTION' | 'SPRING_BOOT_CODE') => {
+    setAiInputType(type)
+    if (type === 'DESCRIPTION') {
+      setAiContractName('Users API (AI)')
+      setAiInput(`Create a user management API.
+
+GET /users - Returns a list of users.
+GET /users/{id} - Returns one user by UUID id.
+POST /users - Creates a new user with name, email, phone, and role (enum: ADMIN, DEVELOPER, USER).
+DELETE /users/{id} - Deletes a user by UUID id.
+
+User model:
+id: uuid (required)
+name: string (required)
+email: email (required)
+phone: string
+role: enum [ADMIN, DEVELOPER, USER]`)
+    } else {
+      setAiContractName('Product Catalog API (AI)')
+      setAiInput(`@RestController
+@RequestMapping("/products")
+public class ProductController {
+
+    @GetMapping
+    public List<Product> listProducts() {
+        return List.of();
+    }
+
+    @GetMapping("/{id}")
+    public Product getProduct(@PathVariable UUID id) {
+        return null;
+    }
+
+    @PostMapping
+    public Product createProduct(@RequestBody CreateProductRequest request) {
+        return null;
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteProduct(@PathVariable UUID id) {
+    }
+}
+
+public record Product(UUID id, String title, Double price, String category, Boolean inStock) {}
+public record CreateProductRequest(String title, Double price, String category) {}`)
+    }
+  }
+
+  const handleAiExtract = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!projectId || !aiInput) {
+      setAiStatus('Please provide Project ID and input content.')
+      return
+    }
+
+    setAiLoading(true)
+    setAiStatus(null)
+    setAiExtractedSummary(null)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken.trim()}`
+      }
+
+      const res = await fetch(`/api/v1/projects/${projectId.trim()}/contracts/ai-extract`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          input: aiInput,
+          inputType: aiInputType,
+          name: aiContractName,
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok && data.data) {
+        const result = data.data
+        setIngestedContractId(result.contractId)
+        setContractName(result.name)
+        setAiExtractedSummary({
+          endpoints: result.extractedEndpointsCount,
+          schemas: result.extractedSchemasCount,
+          title: result.candidateTitle || result.name,
+        })
+        setAiStatus(`Success: AI extracted "${result.name}" (ID: ${result.contractId}, Version ${result.version}, ${result.extractedEndpointsCount} endpoints, ${result.extractedSchemasCount} schemas)`)
+      } else {
+        setAiStatus(`Error (${res.status}): ${data.message || JSON.stringify(data.data)}`)
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setAiStatus(`Network Error: ${errorMessage}`)
+    } finally {
+      setAiLoading(false)
     }
   }
 
@@ -468,7 +587,92 @@ components:
       </section>
 
       <section className="card ingest-card">
-        <h2>2. Dynamic Mock Server Runtime Controller</h2>
+        <h2>2. Gemini AI-Assisted Contract Extraction (M8)</h2>
+        <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
+          Extract, validate, and normalize API contracts from natural-language specs or Spring Boot controller source code using Gemini AI.
+        </p>
+
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+          <button
+            type="button"
+            onClick={() => handleSwitchAiPreset('DESCRIPTION')}
+            className="submit-btn"
+            style={{
+              flex: 1,
+              background: aiInputType === 'DESCRIPTION' ? '#3b82f6' : '#1e293b',
+              border: aiInputType === 'DESCRIPTION' ? '1px solid #60a5fa' : '1px solid #334155',
+              padding: '0.5rem 1rem',
+              fontSize: '0.85rem'
+            }}
+          >
+            Natural Language Spec
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSwitchAiPreset('SPRING_BOOT_CODE')}
+            className="submit-btn"
+            style={{
+              flex: 1,
+              background: aiInputType === 'SPRING_BOOT_CODE' ? '#3b82f6' : '#1e293b',
+              border: aiInputType === 'SPRING_BOOT_CODE' ? '1px solid #60a5fa' : '1px solid #334155',
+              padding: '0.5rem 1rem',
+              fontSize: '0.85rem'
+            }}
+          >
+            Spring Boot Controller Code
+          </button>
+        </div>
+
+        <form onSubmit={handleAiExtract} className="ingest-form">
+          <div className="form-group">
+            <label htmlFor="aiContractName">Target Contract Name:</label>
+            <input
+              id="aiContractName"
+              type="text"
+              placeholder="e.g. Users API (AI)"
+              value={aiContractName}
+              onChange={(e) => setAiContractName(e.target.value)}
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="aiInput">
+              {aiInputType === 'DESCRIPTION' ? 'Informal API Description:' : 'Spring Boot Controller / Model Source:'}
+            </label>
+            <textarea
+              id="aiInput"
+              rows={6}
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+            />
+          </div>
+
+          <button type="submit" disabled={aiLoading || !projectId} className="submit-btn">
+            {aiLoading ? 'Extracting via Gemini AI...' : `Extract Contract via Gemini (${aiInputType})`}
+          </button>
+        </form>
+
+        {aiExtractedSummary && (
+          <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: '#0f172a', borderRadius: '8px', border: '1px solid #334155' }}>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.9rem' }}>
+              <strong>Extracted Title:</strong> {aiExtractedSummary.title} | <strong>Endpoints:</strong> {aiExtractedSummary.endpoints} | <strong>Schemas:</strong> {aiExtractedSummary.schemas}
+            </p>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.85rem', color: '#10b981' }}>
+              &check; Ready! Contract ID is now set for Runtime startup below.
+            </p>
+          </div>
+        )}
+
+        {aiStatus && (
+          <div className={`status-box ${aiStatus.startsWith('Success') ? 'success' : 'alert'}`}>
+            {aiStatus}
+          </div>
+        )}
+      </section>
+
+      <section className="card ingest-card">
+        <h2>3. Dynamic Mock Server Runtime Controller</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
           Launch an in-process, stateful mock server from your ingested contract version.
         </p>
@@ -503,7 +707,7 @@ components:
       </section>
 
       <section className="card ingest-card">
-        <h2>3. Asynchronous Mock Data Generation (Kafka Jobs + M5 Engine)</h2>
+        <h2>4. Asynchronous Mock Data Generation (Kafka Jobs + M5 Engine)</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
           Queue an asynchronous background generation job dispatched via Kafka to populate the Redis mock state store.
         </p>
@@ -578,7 +782,7 @@ components:
       </section>
 
       <section className="card ingest-card">
-        <h2>4. Live Mock Request Dispatcher Tester</h2>
+        <h2>5. Live Mock Request Dispatcher Tester</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
           Execute public HTTP calls directly against <code>/mock/&#123;runtimeId&#125;</code> and observe stateful responses.
         </p>

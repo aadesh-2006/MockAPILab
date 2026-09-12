@@ -2,12 +2,17 @@ package com.mockapilab.modules.contract.service;
 
 import com.mockapilab.common.exception.ForbiddenException;
 import com.mockapilab.common.exception.ResourceNotFoundException;
+import com.mockapilab.modules.ai.dto.AiExtractContractRequest;
+import com.mockapilab.modules.ai.dto.AiExtractContractResponse;
+import com.mockapilab.modules.ai.model.candidate.AiCandidateContract;
+import com.mockapilab.modules.ai.service.AiService;
 import com.mockapilab.modules.contract.dto.ContractDetailResponse;
 import com.mockapilab.modules.contract.dto.ContractSummaryResponse;
 import com.mockapilab.modules.contract.dto.ContractVersionDetailResponse;
 import com.mockapilab.modules.contract.dto.ContractVersionSummaryResponse;
 import com.mockapilab.modules.contract.dto.IngestContractRequest;
 import com.mockapilab.modules.contract.model.Contract;
+import com.mockapilab.modules.contract.model.ContractSourceType;
 import com.mockapilab.modules.contract.model.ContractVersion;
 import com.mockapilab.modules.contract.model.normalized.NormalizedContract;
 import com.mockapilab.modules.contract.parser.OpenApiContractParser;
@@ -17,6 +22,7 @@ import com.mockapilab.modules.project.model.Project;
 import com.mockapilab.modules.project.repository.ProjectRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.UUID;
@@ -31,17 +37,20 @@ public class ContractService {
     private final ContractVersionRepository contractVersionRepository;
     private final ProjectRepository projectRepository;
     private final OpenApiContractParser openApiContractParser;
+    private final AiService aiService;
 
     public ContractService(
             ContractRepository contractRepository,
             ContractVersionRepository contractVersionRepository,
             ProjectRepository projectRepository,
-            OpenApiContractParser openApiContractParser
+            OpenApiContractParser openApiContractParser,
+            AiService aiService
     ) {
         this.contractRepository = contractRepository;
         this.contractVersionRepository = contractVersionRepository;
         this.projectRepository = projectRepository;
         this.openApiContractParser = openApiContractParser;
+        this.aiService = aiService;
     }
 
     @Transactional
@@ -63,6 +72,53 @@ public class ContractService {
         ContractVersion savedVersion = contractVersionRepository.save(version1);
 
         return ContractDetailResponse.fromEntity(savedContract, savedVersion);
+    }
+
+    @Transactional
+    public AiExtractContractResponse extractAndIngestAiContract(UUID projectId, AiExtractContractRequest request, UUID currentUserId) {
+        Project project = verifyProjectOwnership(projectId, currentUserId);
+
+        AiService.AiExtractionResult extractionResult = aiService.extractAndNormalize(request.input(), request.inputType());
+        NormalizedContract normalizedContract = extractionResult.normalizedContract();
+        AiCandidateContract candidate = extractionResult.candidate();
+
+        String contractName = StringUtils.hasText(request.name())
+                ? request.name().trim()
+                : (StringUtils.hasText(normalizedContract.metadata().title()) ? normalizedContract.metadata().title().trim() : "AI Extracted Contract");
+        String contractDescription = StringUtils.hasText(request.description())
+                ? request.description().trim()
+                : normalizedContract.metadata().description();
+
+        Contract contract = new Contract(project, contractName, contractDescription);
+        Contract savedContract = contractRepository.save(contract);
+
+        ContractSourceType sourceType = switch (request.inputType()) {
+            case DESCRIPTION -> ContractSourceType.NATURAL_LANGUAGE;
+            case SPRING_BOOT_CODE -> ContractSourceType.AI_CONTROLLER;
+        };
+
+        ContractVersion version1 = new ContractVersion(
+                savedContract,
+                1,
+                sourceType,
+                normalizedContract
+        );
+        savedContract.addVersion(version1);
+        ContractVersion savedVersion = contractVersionRepository.save(version1);
+
+        ContractDetailResponse contractDetail = ContractDetailResponse.fromEntity(savedContract, savedVersion);
+
+        return new AiExtractContractResponse(
+                savedContract.getId(),
+                savedContract.getName(),
+                savedContract.getDescription(),
+                savedVersion.getVersionNumber(),
+                savedVersion.getSourceType().name(),
+                normalizedContract.endpoints().size(),
+                normalizedContract.schemas() != null ? normalizedContract.schemas().size() : 0,
+                candidate.title(),
+                contractDetail
+        );
     }
 
     @Transactional(readOnly = true)

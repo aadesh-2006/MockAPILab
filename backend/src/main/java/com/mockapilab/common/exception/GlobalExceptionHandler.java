@@ -1,6 +1,8 @@
 package com.mockapilab.common.exception;
 
 import com.mockapilab.common.api.ApiResponse;
+import com.mockapilab.modules.ai.exception.AiConfigurationException;
+import com.mockapilab.modules.ai.exception.AiProviderException;
 import com.mockapilab.modules.contract.validation.ContractValidationException;
 import com.mockapilab.modules.runtime.messaging.GenerationJobException;
 import com.mockapilab.modules.runtime.state.RuntimeStateException;
@@ -98,6 +100,20 @@ public class GlobalExceptionHandler {
         log.error("Generation job error encountered: {}", ex.getMessage(), ex);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.error("Generation job service error: " + ex.getMessage(), Map.of("error", ex.getMessage())));
+    }
+
+    @ExceptionHandler(AiConfigurationException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleAiConfigurationException(AiConfigurationException ex) {
+        log.warn("AI configuration issue: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error("AI service is not properly configured: " + ex.getMessage(), Map.of("error", ex.getMessage())));
+    }
+
+    @ExceptionHandler(AiProviderException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleAiProviderException(AiProviderException ex) {
+        log.error("AI provider error encountered: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error("AI extraction provider error: " + ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
     @ExceptionHandler(Exception.class)

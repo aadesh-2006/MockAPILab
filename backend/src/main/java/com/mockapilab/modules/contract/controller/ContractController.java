@@ -1,6 +1,8 @@
 package com.mockapilab.modules.contract.controller;
 
 import com.mockapilab.common.api.ApiResponse;
+import com.mockapilab.modules.ai.dto.AiExtractContractRequest;
+import com.mockapilab.modules.ai.dto.AiExtractContractResponse;
 import com.mockapilab.modules.auth.security.UserPrincipal;
 import com.mockapilab.modules.contract.dto.ContractDetailResponse;
 import com.mockapilab.modules.contract.dto.ContractSummaryResponse;
@@ -50,6 +52,18 @@ public class ContractController {
         ContractDetailResponse response = contractService.ingestContract(projectId, request, principal.getId());
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success("Contract ingested and normalized successfully", response));
+    }
+
+    @PostMapping("/ai-extract")
+    @Operation(summary = "Extract Contract via Gemini AI", description = "Analyzes natural-language descriptions or Spring Boot code with Gemini AI, validates deterministically, and normalizes into a canonical API contract.")
+    public ResponseEntity<ApiResponse<AiExtractContractResponse>> aiExtractContract(
+            @PathVariable UUID projectId,
+            @Valid @RequestBody AiExtractContractRequest request,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        AiExtractContractResponse response = contractService.extractAndIngestAiContract(projectId, request, principal.getId());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success("Contract extracted and normalized via AI successfully", response));
     }
 
     @GetMapping
