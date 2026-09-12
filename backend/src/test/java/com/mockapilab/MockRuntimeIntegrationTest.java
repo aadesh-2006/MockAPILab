@@ -431,12 +431,12 @@ class MockRuntimeIntegrationTest {
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(genReq)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.success", is(true)))
                 .andExpect(jsonPath("$.data.runtimeId", is(runtimeId)))
                 .andExpect(jsonPath("$.data.collection", is("/pets")))
-                .andExpect(jsonPath("$.data.generatedCount", is(5)))
-                .andExpect(jsonPath("$.data.seed", is(42)));
+                .andExpect(jsonPath("$.data.count", is(5)))
+                .andExpect(jsonPath("$.data.requestedSeed", is(42)));
 
         // 3. Subsequent GET /pets now returns 5 entities
         MvcResult getResult = mockMvc.perform(get("/mock/" + runtimeId + "/pets"))
@@ -448,18 +448,13 @@ class MockRuntimeIntegrationTest {
 
         // 4. Test unseeded generation returns effective generated seed
         GenerateDataRequest unseededReq = new GenerateDataRequest("/pets", 3, null);
-        MvcResult unseededResult = mockMvc.perform(post("/api/v1/projects/" + projectId + "/runtimes/" + runtimeId + "/data/generate")
+        mockMvc.perform(post("/api/v1/projects/" + projectId + "/runtimes/" + runtimeId + "/data/generate")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(unseededReq)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.generatedCount", is(3)))
-                .andExpect(jsonPath("$.data.seed", notNullValue()))
-                .andReturn();
-
-        JsonNode unseededNode = objectMapper.readTree(unseededResult.getResponse().getContentAsString());
-        long returnedSeed = unseededNode.path("data").path("seed").asLong();
-        assertThat(returnedSeed).isNotZero();
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.count", is(3)))
+                .andExpect(jsonPath("$.data.status", notNullValue()));
     }
 
     @Test

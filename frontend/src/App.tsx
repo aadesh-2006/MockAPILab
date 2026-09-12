@@ -2,12 +2,27 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 interface SystemStatus {
+  status: string
   service: string
   version: string
-  milestone: string
-  status: string
-  javaVersion?: string
-  architecture?: string
+  javaVersion: string
+  springBootVersion: string
+  activeProfiles: string[]
+  environment: string
+  timestamp: string
+}
+
+interface GenerationJobInfo {
+  jobId: string
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  collection: string
+  count: number
+  requestedSeed?: number | null
+  effectiveSeed?: number | null
+  errorMessage?: string | null
+  createdAt?: string
+  startedAt?: string
+  completedAt?: string
 }
 
 function App() {
@@ -15,10 +30,12 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Contract Ingestion Tester State
+  // Auth & Project Context State
   const [jwtToken, setJwtToken] = useState('')
   const [projectId, setProjectId] = useState('')
-  const [contractName, setContractName] = useState('Sample Users API')
+
+  // Contract Ingestion State (M3)
+  const [contractName, setContractName] = useState('Users API')
   const [contractContent, setContractContent] = useState(`openapi: 3.0.3
 info:
   title: Users Service API
@@ -26,10 +43,10 @@ info:
 paths:
   /users:
     get:
-      summary: List users
+      summary: List all users
       responses:
         '200':
-          description: Success
+          description: A list of users
           content:
             application/json:
               schema:
@@ -37,13 +54,13 @@ paths:
                 items:
                   $ref: '#/components/schemas/User'
     post:
-      summary: Create user
+      summary: Create a user
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UserInput'
+              $ref: '#/components/schemas/User'
       responses:
         '201':
           description: User created
@@ -54,43 +71,26 @@ paths:
   /users/{id}:
     get:
       summary: Get user by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
-          description: User details
+          description: User found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
-    delete:
-      summary: Delete user
-      responses:
-        '204':
-          description: User deleted
+        '404':
+          description: User not found
 components:
   schemas:
-    UserInput:
-      type: object
-      required:
-        - name
-        - email
-      properties:
-        name:
-          type: string
-        email:
-          type: string
-          format: email
-        phone:
-          type: string
-        role:
-          type: string
-          enum:
-            - ADMIN
-            - USER
-            - MANAGER
     User:
       type: object
       required:
-        - id
         - name
         - email
       properties:
@@ -105,22 +105,25 @@ components:
         phone:
           type: string
         role:
-          type: string`)
+          type: string
+          enum: [ADMIN, DEVELOPER, USER]
+`)
   const [ingestStatus, setIngestStatus] = useState<string | null>(null)
   const [ingestLoading, setIngestLoading] = useState(false)
   const [ingestedContractId, setIngestedContractId] = useState<string | null>(null)
 
-  // Runtime Management State
+  // Runtime State (M4/M6)
   const [runtimeId, setRuntimeId] = useState('')
   const [runtimeStatus, setRuntimeStatus] = useState<string | null>(null)
   const [runtimeLoading, setRuntimeLoading] = useState(false)
 
-  // Data Generation State (M5)
+  // Asynchronous Data Generation State (M7 Kafka Jobs)
   const [genCollection, setGenCollection] = useState('/users')
   const [genCount, setGenCount] = useState(5)
   const [genSeed, setGenSeed] = useState('42')
   const [genStatus, setGenStatus] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
+  const [activeJob, setActiveJob] = useState<GenerationJobInfo | null>(null)
 
   // Live Mock Dispatch Tester State
   const [mockPath, setMockPath] = useState('/users')
@@ -230,6 +233,43 @@ components:
     }
   }
 
+  const pollJobStatus = async (jobId: string, pId: string, rId: string, token?: string) => {
+    const headers: Record<string, string> = {}
+    if (token) {
+      headers['Authorization'] = `Bearer ${token.trim()}`
+    }
+
+    try {
+      const res = await fetch(`/api/v1/projects/${pId}/runtimes/${rId}/generation-jobs/${jobId}`, {
+        headers,
+      })
+      const json = await res.json()
+      if (res.ok && json.data) {
+        const job: GenerationJobInfo = json.data
+        setActiveJob(job)
+
+        if (job.status === 'COMPLETED') {
+          setGenStatus(`Success: Job COMPLETED! Generated ${job.count} entities in "${job.collection}" (Effective Seed: ${job.effectiveSeed})`)
+          setGenLoading(false)
+        } else if (job.status === 'FAILED') {
+          setGenStatus(`Failed: Job execution error - ${job.errorMessage || 'Worker processing failed'}`)
+          setGenLoading(false)
+        } else {
+          // Status is QUEUED or RUNNING -> continue polling
+          setGenStatus(`Job Status: ${job.status}... (Job ID: ${job.jobId})`)
+          setTimeout(() => pollJobStatus(jobId, pId, rId, token), 1000)
+        }
+      } else {
+        setGenStatus(`Error polling job status (${res.status}): ${json.message || 'Unknown'}`)
+        setGenLoading(false)
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      setGenStatus(`Polling error: ${errMsg}`)
+      setGenLoading(false)
+    }
+  }
+
   const handleGenerateData = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!projectId || !runtimeId || !genCollection) {
@@ -239,6 +279,7 @@ components:
 
     setGenLoading(true)
     setGenStatus(null)
+    setActiveJob(null)
 
     try {
       const headers: Record<string, string> = {
@@ -263,15 +304,19 @@ components:
       })
 
       const data = await res.json()
-      if (res.ok) {
-        setGenStatus(`Success: Generated ${data.data.generatedCount} entities in "${data.data.collection}" (Effective Seed: ${data.data.seed})`)
+      if (res.status === 202 || res.ok) {
+        const job = data.data
+        setActiveJob(job)
+        setGenStatus(`Job Queued: ${job.status} (Job ID: ${job.jobId}). Dispatching to Kafka worker...`)
+        // Start polling job status
+        pollJobStatus(job.jobId, projectId.trim(), runtimeId.trim(), jwtToken)
       } else {
         setGenStatus(`Error (${res.status}): ${data.message || JSON.stringify(data.data)}`)
+        setGenLoading(false)
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err)
       setGenStatus(`Network Error: ${errorMessage}`)
-    } finally {
       setGenLoading(false)
     }
   }
@@ -304,17 +349,18 @@ components:
       const res = await fetch(url, options)
       const text = await res.text()
 
-      let parsed: string
+      let parsed: unknown = text
       try {
-        parsed = JSON.stringify(JSON.parse(text), null, 2)
+        parsed = JSON.parse(text)
       } catch {
-        parsed = text
+        // Leave as raw text
       }
 
-      setMockResponse(`Status: ${res.status} ${res.statusText}\n\n${parsed}`)
+      const formatted = typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : text
+      setMockResponse(`HTTP ${res.status} ${res.statusText}\n\n${formatted}`)
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err)
-      setMockResponse(`Request Error: ${errorMessage}`)
+      setMockResponse(`Request Failed: ${errorMessage}`)
     } finally {
       setMockLoading(false)
     }
@@ -323,40 +369,43 @@ components:
   return (
     <main className="container">
       <header className="header">
-        <div className="badge">Milestone 5 • Realistic Deterministic Data Engine</div>
-        <h1>MockAPILab</h1>
+        <h1>MockAPILab Dashboard</h1>
         <p className="subtitle">
-          Intelligent, stateful mock backend engine with reproducible schema-driven realistic data generation.
+          Intelligent, stateful mock backend engine for modern full-stack development
         </p>
       </header>
 
-      <section className="card-grid">
-        <div className="card">
-          <h2>Backend Status</h2>
-          {loading && <p className="status-badge loading">Connecting to backend...</p>}
-          {error && (
-            <p className="status-badge error">
-              Offline (Start backend on port 8080)
-            </p>
-          )}
-          {status && (
-            <div className="status-details">
-              <p><strong>Service:</strong> {status.service}</p>
-              <p><strong>Status:</strong> <span className="status-badge up">{status.status}</span></p>
-              <p><strong>Version:</strong> {status.version}</p>
-              <p><strong>Architecture:</strong> {status.architecture}</p>
-            </div>
-          )}
-        </div>
+      <section className="card">
+        <h2>System Status</h2>
+        {loading && <p className="status-text">Checking backend connection...</p>}
+        {error && (
+          <div className="status-box alert">
+            <p><strong>Connection Error:</strong> {error}</p>
+            <p className="hint">Ensure the Spring Boot backend is running on port 8080.</p>
+          </div>
+        )}
+        {status && (
+          <div className="status-box success">
+            <p><strong>Service:</strong> {status.service}</p>
+            <p><strong>Status:</strong> {status.status}</p>
+            <p><strong>Version:</strong> {status.version}</p>
+            <p><strong>Environment:</strong> {status.environment}</p>
+            <p><strong>Spring Boot:</strong> {status.springBootVersion} (Java {status.javaVersion})</p>
+          </div>
+        )}
+      </section>
 
-        <div className="card">
-          <h2>Architecture Blueprint</h2>
-          <ul className="feature-list">
-            <li><strong>Core:</strong> Java 21 + Spring Boot (Modular Monolith)</li>
-            <li><strong>Contract Engine:</strong> OpenAPI 3.x Parser $\rightarrow$ Normalized Contract Model</li>
-            <li><strong>Mock Runtime:</strong> Stateful in-process runtime (/mock/&#123;runtimeId&#125;/**)</li>
-            <li><strong>Data Engine:</strong> Seedable PRNG, Schema Constraints &amp; Curated Realistic Data</li>
-            <li><strong>Explicit Population:</strong> No silent state mutations on GET requests</li>
+      <section className="card architecture-card">
+        <h2>Architecture Overview</h2>
+        <div className="arch-info">
+          <p>
+            <strong>MockAPILab</strong> runs as a high-performance modular monolith with Redis-backed shared state and Kafka asynchronous worker jobs:
+          </p>
+          <ul className="arch-list">
+            <li><strong>PostgreSQL 16:</strong> System of Record for Users, Projects, Contracts (JSONB), and Generation Jobs</li>
+            <li><strong>Redis 7:</strong> High-performance live mutable mock entity store &amp; collection index sets</li>
+            <li><strong>Apache Kafka:</strong> Asynchronous generation job queue &amp; worker event streaming</li>
+            <li><strong>Data Engine:</strong> Seedable PRNGs with schema heuristics &amp; India-friendly curated datasets</li>
             <li><strong>Security:</strong> Stateless JWT for Management, Public for Mock Gateways</li>
           </ul>
         </div>
@@ -454,9 +503,9 @@ components:
       </section>
 
       <section className="card ingest-card">
-        <h2>3. Realistic Mock Data Generation (M5 Engine)</h2>
+        <h2>3. Asynchronous Mock Data Generation (Kafka Jobs + M5 Engine)</h2>
         <p style={{ marginBottom: '1rem', color: '#94a3b8' }}>
-          Explicitly populate the runtime collection with reproducible, schema-aware realistic mock data.
+          Queue an asynchronous background generation job dispatched via Kafka to populate the Redis mock state store.
         </p>
 
         <form onSubmit={handleGenerateData} className="ingest-form">
@@ -495,12 +544,34 @@ components:
           </div>
 
           <button type="submit" disabled={genLoading || !runtimeId} className="submit-btn">
-            {genLoading ? 'Generating Mock Data...' : 'Generate Mock Data'}
+            {genLoading ? 'Queueing Job...' : 'Queue Generation Job'}
           </button>
         </form>
 
+        {activeJob && (
+          <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: '#0f172a', borderRadius: '8px', border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>Job ID: <code>{activeJob.jobId}</code></span>
+              <span style={{
+                padding: '0.2rem 0.6rem',
+                borderRadius: '4px',
+                fontSize: '0.75rem',
+                fontWeight: 'bold',
+                background: activeJob.status === 'COMPLETED' ? '#065f46' : activeJob.status === 'FAILED' ? '#991b1b' : '#1e40af',
+                color: '#fff'
+              }}>
+                {activeJob.status}
+              </span>
+            </div>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.9rem' }}>
+              <strong>Collection:</strong> {activeJob.collection} | <strong>Count:</strong> {activeJob.count}
+              {activeJob.effectiveSeed ? ` | Effective Seed: ${activeJob.effectiveSeed}` : ''}
+            </p>
+          </div>
+        )}
+
         {genStatus && (
-          <div className={`status-box ${genStatus.startsWith('Success') ? 'success' : 'alert'}`}>
+          <div className={`status-box ${genStatus.startsWith('Success') ? 'success' : genStatus.startsWith('Failed') ? 'alert' : ''}`}>
             {genStatus}
           </div>
         )}
@@ -566,7 +637,7 @@ components:
       </section>
 
       <footer className="footer">
-        <p>MockAPILab &copy; {new Date().getFullYear()} — Developer Productivity &amp; Stateful Mocking Platform</p>
+        <p>MockAPILab &copy; {new Date().getFullYear()} - Developer Productivity &amp; Stateful Mocking Platform</p>
       </footer>
     </main>
   )

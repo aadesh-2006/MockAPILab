@@ -26,6 +26,14 @@ mockapilab:
     expiration-ms: 3600000
   runtime:
     state-store: in-memory
+  kafka:
+    create-topics: false
+    producer:
+      enabled: false
+    consumer:
+      auto-startup: false
+    topics:
+      generation-jobs: mockapi.generation.jobs.test
 
 logging:
   level:

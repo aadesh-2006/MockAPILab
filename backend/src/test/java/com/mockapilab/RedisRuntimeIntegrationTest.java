@@ -221,10 +221,10 @@ class RedisRuntimeIntegrationTest {
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(generateReq)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.data.collection", is("/pets")))
-                .andExpect(jsonPath("$.data.generatedCount", is(5)))
-                .andExpect(jsonPath("$.data.seed", is(42)));
+                .andExpect(jsonPath("$.data.count", is(5)))
+                .andExpect(jsonPath("$.data.requestedSeed", is(42)));
 
         // 7. Verify Runtime A mock GET /pets returns 5 entities from Redis state
         mockMvc.perform(get("/mock/" + runtimeIdA + "/pets"))

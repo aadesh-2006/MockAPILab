@@ -1,4 +1,4 @@
-server:
+﻿server:
   port: ${SERVER_PORT:8080}
   servlet:
     context-path: /
@@ -30,6 +30,18 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: ${REDIS_TIMEOUT:2000ms}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:mockapilab-generation-workers}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
 mockapilab:
   jwt:
@@ -37,6 +49,12 @@ mockapilab:
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
   runtime:
     state-store: ${RUNTIME_STATE_STORE:redis}
+  kafka:
+    create-topics: ${KAFKA_CREATE_TOPICS:true}
+    consumer:
+      auto-startup: ${KAFKA_CONSUMER_AUTO_STARTUP:true}
+    topics:
+      generation-jobs: ${KAFKA_GENERATION_JOBS_TOPIC:mockapi.generation.jobs}
 
 management:
   endpoints:

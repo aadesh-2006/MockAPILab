@@ -3,10 +3,11 @@ package com.mockapilab.modules.runtime.controller;
 import com.mockapilab.common.api.ApiResponse;
 import com.mockapilab.modules.auth.security.UserPrincipal;
 import com.mockapilab.modules.runtime.dto.GenerateDataRequest;
-import com.mockapilab.modules.runtime.dto.GenerateDataResponse;
+import com.mockapilab.modules.runtime.dto.GenerationJobResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeResponse;
 import com.mockapilab.modules.runtime.dto.RuntimeStatusResponse;
 import com.mockapilab.modules.runtime.dto.StartRuntimeRequest;
+import com.mockapilab.modules.runtime.service.GenerationJobService;
 import com.mockapilab.modules.runtime.service.RuntimeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -27,18 +28,20 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Controller exposing endpoints for managing mock runtime server lifecycles and realistic data generation.
+ * Controller exposing endpoints for managing mock runtime server lifecycles and asynchronous data generation jobs.
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")
-@Tag(name = "Mock Runtimes", description = "Dynamic mock runtime lifecycle and deterministic data generation")
+@Tag(name = "Mock Runtimes", description = "Dynamic mock runtime lifecycle and asynchronous data generation")
 @SecurityRequirement(name = "bearerAuth")
 public class RuntimeController {
 
     private final RuntimeService runtimeService;
+    private final GenerationJobService generationJobService;
 
-    public RuntimeController(RuntimeService runtimeService) {
+    public RuntimeController(RuntimeService runtimeService, GenerationJobService generationJobService) {
         this.runtimeService = runtimeService;
+        this.generationJobService = generationJobService;
     }
 
     @PostMapping("/contracts/{contractId}/versions/{versionNumber}/runtime")
@@ -88,16 +91,39 @@ public class RuntimeController {
     }
 
     @PostMapping("/runtimes/{runtimeId}/data/generate")
-    @Operation(summary = "Generate Mock Collection Data", description = "Generates realistic, deterministic mock entities for a specific collection and populates the runtime state store.")
-    public ResponseEntity<ApiResponse<GenerateDataResponse>> generateMockData(
+    @Operation(summary = "Queue Asynchronous Mock Collection Data Generation", description = "Creates a durable generation job and dispatches an asynchronous worker event to populate the runtime state store.")
+    public ResponseEntity<ApiResponse<GenerationJobResponse>> generateMockData(
             @PathVariable UUID projectId,
             @PathVariable UUID runtimeId,
             @Valid @RequestBody GenerateDataRequest request,
             @AuthenticationPrincipal UserPrincipal principal
     ) {
-        GenerateDataResponse response = runtimeService.generateMockData(projectId, runtimeId, request, principal.getId());
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Mock collection data generated successfully", response));
+        GenerationJobResponse response = generationJobService.submitJob(projectId, runtimeId, request, principal.getId());
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success("Mock collection data generation job queued successfully", response));
+    }
+
+    @GetMapping("/runtimes/{runtimeId}/generation-jobs/{jobId}")
+    @Operation(summary = "Get Generation Job Status", description = "Retrieves the status, execution timestamps, and metadata of a generation job.")
+    public ResponseEntity<ApiResponse<GenerationJobResponse>> getGenerationJob(
+            @PathVariable UUID projectId,
+            @PathVariable UUID runtimeId,
+            @PathVariable UUID jobId,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        GenerationJobResponse response = generationJobService.getJob(projectId, runtimeId, jobId, principal.getId());
+        return ResponseEntity.ok(ApiResponse.success("Generation job details retrieved successfully", response));
+    }
+
+    @GetMapping("/runtimes/{runtimeId}/generation-jobs")
+    @Operation(summary = "List Generation Jobs", description = "Lists all generation jobs for a runtime instance, ordered newest first.")
+    public ResponseEntity<ApiResponse<List<GenerationJobResponse>>> listGenerationJobs(
+            @PathVariable UUID projectId,
+            @PathVariable UUID runtimeId,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        List<GenerationJobResponse> response = generationJobService.listJobs(projectId, runtimeId, principal.getId());
+        return ResponseEntity.ok(ApiResponse.success("Generation jobs retrieved successfully", response));
     }
 
     @PostMapping("/runtimes/{runtimeId}/stop")
@@ -112,7 +138,7 @@ public class RuntimeController {
     }
 
     @DeleteMapping("/runtimes/{runtimeId}")
-    @Operation(summary = "Delete Mock Runtime", description = "Stops, clears in-memory state, and deletes the runtime instance.")
+    @Operation(summary = "Delete Mock Runtime", description = "Stops, clears state, and deletes the runtime instance.")
     public ResponseEntity<ApiResponse<Void>> deleteRuntime(
             @PathVariable UUID projectId,
             @PathVariable UUID runtimeId,

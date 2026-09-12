@@ -1,4 +1,4 @@
-﻿# MockAPILab - Architecture & Design Decisions
+# MockAPILab - Architecture & Design Decisions
 
 This document outlines the architectural principles, technology choices, and component responsibilities for **MockAPILab**.
 
@@ -9,25 +9,29 @@ This document outlines the architectural principles, technology choices, and com
 MockAPILab is intentionally structured as a **Modular Monolith** rather than a distributed set of microservices.
 
 ### Why a Modular Monolith?
-- **Domain Cohesion & Velocity:** Domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch, data generation, state management) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
+- **Domain Cohesion & Velocity:** Domain boundaries (identity, projects, contracts, state machines, scenarios, runtime dispatch, data generation, state management, asynchronous jobs) benefit from compile-time type safety, shared memory calls, and single-deployment coordination.
 - **Operational Simplicity:** Avoids the overhead of service meshes, distributed tracing, network latency between internal components, and multi-service deployment synchronization.
 - **Strict Boundary Enforcement:** Modules communicate via clean interfaces/DTOs within `com.mockapilab.modules.*`. When a module warrants independent scaling in the future, its clear package boundaries make extraction straightforward.
 
 ```
 com.mockapilab
-+-- common/             # Cross-cutting: web exceptions, API envelopes, CORS, OpenAPI configuration
++-- common/                 # Cross-cutting: web exceptions, API envelopes, CORS, OpenAPI configuration
 +-- modules/
-    +-- auth/           # Identity, JWT issuance, password hashing, UserPrincipal (M2)
-    +-- project/        # Workspace boundaries & owner isolation (M2)
-    +-- contract/       # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
-    +-- runtime/        # Stateful Mock Runtime Engine (M4)
-        +-- controller/ # Public mock gateway (/mock/{runtimeId}/**) & runtime management
-        +-- engine/     # Route compiler, regex matching, request validator, dispatcher
-        +-- state/      # Runtime state store abstraction, Redis & In-Memory implementations (M6)
-        +-- config/     # Redis & runtime bean configuration (M6)
-        +-- generation/ # Realistic deterministic data generation engine (M5)
-    +-- scenario/       # Stateful workflows, sequences, and rule conditions (Future)
-    +-- ai/             # Gemini-assisted schema ingestion & contract extraction (Future)
+    +-- auth/               # Identity, JWT issuance, password hashing, UserPrincipal (M2)
+    +-- project/            # Workspace boundaries & owner isolation (M2)
+    +-- contract/           # OpenAPI/Swagger parser, Normalized Contract Model, JSONB persistence (M3)
+    +-- runtime/            # Stateful Mock Runtime Engine (M4/M5/M6/M7)
+        +-- controller/     # Mock gateway (/mock/{runtimeId}/**), runtime controls, async job endpoints
+        +-- engine/         # Route compiler, regex matching, request validator, dispatcher
+        +-- state/          # Runtime state store abstraction, Redis & In-Memory implementations (M6)
+        +-- config/         # Redis & Kafka topic / producer / consumer configuration (M6/M7)
+        +-- generation/     # Realistic deterministic data generation engine (M5)
+        +-- messaging/      # Kafka job producer, consumer worker, and event contracts (M7)
+        +-- model/          # MockRuntime and GenerationJob entities (M4/M7)
+        +-- repository/     # MockRuntimeRepository and GenerationJobRepository
+        +-- service/        # RuntimeService and GenerationJobService
+    +-- scenario/           # Stateful workflows, sequences, and rule conditions (Future)
+    +-- ai/                 # Gemini-assisted schema ingestion & contract extraction (Future)
 ```
 
 ---
@@ -47,43 +51,56 @@ flowchart TD
         ProjectModule["Project Workspace Engine"]
         ContractModule["Contract Engine (Parser + Normalizer)"]
         RuntimeEngine["Stateful Mock Runtime Engine\n(/mock/{runtimeId}/**)"]
+        JobService["GenerationJobService (Queue & Status API)"]
+        KafkaProducer["GenerationJobProducer"]
+        KafkaConsumer["GenerationJobConsumer (Worker)"]
         DataEngine["Realistic Deterministic Data Engine\n(Seedable PRNG & Schema Evaluator)"]
         StateStore["RuntimeStateStore Interface\n(RedisRuntimeStateStore / InMemoryRuntimeStateStore)"]
-        AILayer["Contract Extractor (Gemini) (Future)"]
+    end
+
+    subgraph Messaging ["Event & Stream Backbone"]
+        KafkaTopic["Apache Kafka 3.7 (KRaft)\nTopic: mockapi.generation.jobs"]
     end
 
     subgraph Data ["Data & Storage Layer"]
-        PG[("PostgreSQL 16\n(System of Record: Users, Projects, Contracts JSONB, Runtimes)")]
+        PG[("PostgreSQL 16 (System of Record)\nUsers, Projects, Contracts JSONB, Runtimes, Generation Jobs")]
         RedisStore[("Redis 7 (Shared Live Mock State)\nHashes & Collection Index Sets")]
     end
 
-    UI -->|Authenticate, Manage Projects, Ingest Contracts, Start Runtimes, Generate Mock Data| API
+    UI -->|Authenticate, Manage Projects, Ingest Contracts, Start Runtimes| API
+    UI -->|Submit Generation Job (HTTP 202) & Poll Status| API
     DevApp -->|Execute Public Mock Requests| RuntimeEngine
+
     API --> AuthModule
     API --> ProjectModule
     API --> ContractModule
     API --> RuntimeEngine
-    API --> DataEngine
-    DataEngine --> StateStore
-    ContractModule --> PG
-    ProjectModule --> PG
-    AuthModule --> PG
-    RuntimeEngine --> PG
-    RuntimeEngine --> StateStore
+    API --> JobService
+
+    JobService -->|1. Persist QUEUED Job| PG
+    JobService -->|2. Publish Event| KafkaProducer
+    KafkaProducer -->|3. Produce GenerationJobEvent| KafkaTopic
+    KafkaTopic -->|4. Consume Event| KafkaConsumer
+    KafkaConsumer -->|5. Execute Job| JobService
+    JobService -->|6. Generate Data| DataEngine
+    JobService -->|7. Write Entities| StateStore
+    JobService -->|8. Mark COMPLETED| PG
+
     StateStore -.->|Production / Multi-Instance| RedisStore
     StateStore -.->|Test / Local Fallback| InMemoryMap["Process Memory"]
 ```
 
-### Component Breakdown
-| Layer / Component | Technology | Primary Responsibility |
+### Component Breakdown & Architectural Separation of Concerns
+| Layer / Component | Technology | Primary Architectural Responsibility |
 | :--- | :--- | :--- |
-| **Client Frontend** | React 18, TypeScript, Vite, TailwindCSS | User dashboard for authentication, project/contract management, runtime lifecycle, and data generation. |
-| **Backend Core** | Java 21, Spring Boot 3.3.x | Modular monolith hosting REST management APIs, route compilers, dispatch engine, and state machines. |
+| **Client Frontend** | React 18, TypeScript, Vite, TailwindCSS | User dashboard for authentication, project/contract management, runtime lifecycle, async job tracking, and live polling. |
+| **Backend Core** | Java 21, Spring Boot 3.4.x | Modular monolith hosting REST management APIs, route compilers, dispatch engine, job orchestrator, and Kafka workers. |
 | **Security & Identity** | Spring Security, jjwt (HMAC-SHA256), BCrypt | Stateless JWT verification, password hashing, workspace ownership enforcement. |
 | **Contract Ingestion** | SwaggerParser 2.1.x, Jackson | OpenAPI 3.x document parsing, dereferencing, normalization into canonical internal AST. |
-| **System of Record** | PostgreSQL 16, Flyway, Spring Data JPA | Relational storage for users, projects, normalized contracts (JSONB), and runtime definitions. |
+| **System of Record** | PostgreSQL 16, Flyway, Spring Data JPA | Relational storage for users, projects, normalized contracts (JSONB), runtimes, and durable `GenerationJob` history. |
+| **Event Transport** | Apache Kafka 3.7 (KRaft mode), Spring Kafka | Asynchronous event backbone decoupling expensive dataset generation from HTTP request threads (`mockapi.generation.jobs`). |
 | **Live Runtime State** | Redis 7, Spring Data Redis (`StringRedisTemplate`) | Shared, partitioned mutable mock entity store across backend instances with atomic hashing and collection indexing. |
-| **Fallback State** | In-Memory (`ConcurrentHashMap` + `LinkedHashMap`) | Process-local state store for unit testing and standalone lightweight execution. |
+| **Fallback State** | In-Memory (`ConcurrentHashMap` + `LinkedHashMap`) | Fast thread-safe isolated state store for test profiles. |
 | **Data Generation** | Pure Java PRNG (`Random(seed)`), Curated datasets | Deterministic, reproducible, schema-aware mock data generation with zero AI dependency. |
 
 ---
@@ -100,8 +117,8 @@ Code Annotations (Future) ---+---> [ Parser & Normalizer ] ---> NormalizedContra
                              |                                         |
 Natural Language Specs ---+                                        +--> Dynamic Mock Engine (M4)
                                                                    +--> Deterministic Data Engine (M5)
+                                                                   +--> Kafka Generation Worker (M7)
                                                                    +--> Stateful Scenarios (Future)
-                                                                   +--> Contract Diffing (Future)
 ```
 
 ### 3.2 Normalized Contract Structure
@@ -154,25 +171,12 @@ com.mockapilab.modules.runtime.generation/
 ### 5.2 Determinism & Seed Reproducibility
 - **Invariant:** Same seed + same schema + same property path = identical generated output across executions.
 - **Seed Branching:** `GenerationSeed.branch(propertyKey)` creates isolated child seeds for sub-properties, guaranteeing that property re-ordering in schemas does not perturb other fields' random streams.
-- **Explicit Seed Exposure:** If a seed is not provided by the caller in `GenerateDataRequest`, a seed is generated once and returned in `GenerateDataResponse.seed` to enable exact future reproducibility.
+- **Explicit Seed Exposure:** When a generation job completes, its effective seed is stored in `GenerationJob.effective_seed` and returned in `GenerationJobResponse.effectiveSeed` for exact future reproducibility.
 
 ### 5.3 Priority Evaluation Order
 Values are evaluated according to a strict priority hierarchy:
 $$\text{Explicit Example} > \text{Default Value} > \text{Enum Constants} > \text{Generated Value}$$
 - When multiple `enumConstants` are defined, values are chosen deterministically based on the seed rather than statically picking the first item.
-
-### 5.4 Realistic Local Curated Datasets
-Data generation requires **zero external AI or online API dependencies**. A rich curated local dataset provides:
-- Human names (first/last)
-- Email addresses matched to generated names
-- Extensible locale-friendly phone numbers (defaulting to India `+91-XXXXXXXXXX` format)
-- Geographic entities (cities, countries, street addresses, postal codes)
-- Companies, domains, departments, and roles
-- Numeric range heuristics (`age`, `price`, `rating`, `port`, `count`) bound to OpenAPI `minimum`/`maximum` constraints.
-
-### 5.5 Explicit Collection Population API
-- Endpoint: `POST /api/v1/projects/{projectId}/runtimes/{runtimeId}/data/generate`
-- Populates `RuntimeStateStore` with $N$ realistic entities without hiding mutations in `GET` requests.
 
 ---
 
@@ -182,10 +186,10 @@ Data generation requires **zero external AI or online API dependencies**. A rich
 State in MockAPILab is divided into two distinct tiers:
 
 1. **System of Record (PostgreSQL):**
-   - User identity, workspace projects, normalized contract versions (JSONB), and runtime lifecycle status (`ACTIVE`, `STOPPED`).
+   - User identity, workspace projects, normalized contract versions (JSONB), runtime definitions, and durable generation jobs.
    - Strong relational integrity, foreign keys, transaction guarantees, and audit history.
 2. **Live Mutable Runtime State (Redis):**
-   - Transient, high-throughput, mutable mock entities created via mock `POST`/`PUT` endpoints or deterministic data generation.
+   - Transient, high-throughput, mutable mock entities created via mock `POST`/`PUT` endpoints or asynchronous data generation workers.
    - Shared across all backend application instances behind a load balancer.
 
 ### 6.2 Redis Data Model & Key Structure
@@ -200,82 +204,128 @@ mockapi:runtime:{runtimeId}:collections                  -->  Redis SET
     Members: ["/pets", "/orders", "/users", ...]
 ```
 
-```mermaid
-flowchart TD
-    subgraph Redis ["Redis 7 Data Store"]
-        subgraph IndexSet ["Runtime Collection Index (Redis SET)"]
-            KeySet["mockapi:runtime:123:collections"]
-            KeySet -->|Member| PathPets["/pets"]
-            KeySet -->|Member| PathOrders["/orders"]
-        end
-
-        subgraph Hashes ["Collection Entities (Redis HASH)"]
-            HashPets["mockapi:runtime:123:collection:/pets"]
-            HashOrders["mockapi:runtime:123:collection:/orders"]
-
-            HashPets -->|"Field: 1"| Pet1["{\"id\":1,\"name\":\"Milo\"}"]
-            HashPets -->|"Field: 2"| Pet2["{\"id\":2,\"name\":\"Luna\"}"]
-
-            HashOrders -->|"Field: 101"| Order1["{\"id\":101,\"amount\":49.99}"]
-        end
-    end
-
-    PathPets -.-> HashPets
-    PathOrders -.-> HashOrders
-```
-
 ### 6.3 Collection Existence & Lifecycle Semantics
 1. **Source of Truth:** The Collection Index Set (`mockapi:runtime:{runtimeId}:collections`) is the single source of truth for collection existence.
 2. **Empty Collection Semantics:** `hasCollection(runtimeId, collectionPath)` evaluates membership in the Redis Set index (`SISMEMBER`). An explicitly initialized empty collection evaluates to `true` even if its entity hash contains zero entries.
 3. **Deletion Retention Semantics:** When `deleteEntity` removes the final entity from a collection hash (`HDEL`), the collection path remains registered in the index set. Entity count becomes 0, but `hasCollection` remains `true`.
 4. **Runtime Teardown:** `clearRuntime(runtimeId)` queries the collection index set, deletes all corresponding collection hashes (`DEL`), and deletes the collection index set itself.
 
-### 6.4 Concurrency, Serialization & Error Handling
-- **Atomic Operations:** Field-level CRUD operations use atomic Redis hash commands (`HSET`, `HGET`, `HDEL`, `HLEN`, `HGETALL`).
-- **Serialization:** `ObjectMapper` deserializes JSON strings into `LinkedHashMap<String, Object>` to preserve property ordering.
-- **Fail-Fast Policy:** Redis communication or serialization failures are wrapped in `RuntimeStateException` (unchecked) and mapped by `GlobalExceptionHandler` to HTTP 503 `SERVICE_UNAVAILABLE` with clear diagnostic envelopes, ensuring errors are never swallowed.
+---
+
+## 7. Kafka-Backed Asynchronous Generation Engine (Milestone 7 Core)
+
+### 7.1 Why Apache Kafka for Mock Generation?
+Generating large, realistic, nested mock datasets (e.g. 100+ entities with relational sub-objects, constraints, and validation) is computationally intensive. In synchronous execution, HTTP client request threads would block, leading to gateway timeouts, connection exhaustion, and poor developer experience.
+
+By introducing Apache Kafka:
+- **Non-Blocking Ingestion:** The generation request returns `HTTP 202 Accepted` immediately.
+- **Worker Decoupling:** Generation execution is handled asynchronously by worker consumers without stalling web request threads.
+- **Durable Scheduling:** Job metadata and status live durably in PostgreSQL while Kafka acts as the scalable transport backbone.
+
+```
+Client (React / HTTP)
+    │  POST .../data/generate
+    ▼
+RuntimeController / GenerationJobService
+    │  1. Validate runtime & project ownership
+    │  2. Save GenerationJob (Status: QUEUED) to PostgreSQL
+    │  3. Publish GenerationJobEvent to Kafka topic 'mockapi.generation.jobs'
+    │  4. Return HTTP 202 Accepted + GenerationJobResponse
+    ▼
+Kafka Topic: mockapi.generation.jobs (Key: jobId)
+    │
+    ▼
+GenerationJobConsumer (Kafka Worker)
+    │  5. Receive GenerationJobEvent
+    │  6. Idempotency check: Skip if COMPLETED / FAILED
+    │  7. Update GenerationJob (Status: RUNNING, startedAt: now)
+    │  8. Execute M5 MockDataGenerator.generateCollection(...)
+    │  9. Write entities into RedisRuntimeStateStore
+    │ 10. Update GenerationJob (Status: COMPLETED, completedAt: now)
+```
+
+### 7.2 Three-Tier Storage Model
+```
+┌───────────────────────────────────────────────────────────────┐
+│                          Storage Tier                         │
+├──────────────────┬────────────────────┬───────────────────────┤
+│ PostgreSQL 16    │ Durable SoR        │ Users, Projects,      │
+│                  │                    │ Contracts (JSONB),    │
+│                  │                    │ Runtimes, Jobs        │
+├──────────────────┼────────────────────┼───────────────────────┤
+│ Apache Kafka 3.7 │ Event Backbone     │ Asynchronous Job      │
+│                  │                    │ Commands & Events     │
+├──────────────────┼────────────────────┼───────────────────────┤
+│ Redis 7          │ Live Mutable State │ Mock entity hashes &  │
+│                  │                    │ collection index sets │
+└──────────────────┴────────────────────┴───────────────────────┘
+```
+
+### 7.3 Event Contract & Schema
+Topic: `mockapi.generation.jobs`  
+Payload: `GenerationJobEvent` (JSON serialized):
+```json
+{
+  "jobId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "runtimeId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "projectId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "collection": "/users",
+  "count": 50,
+  "requestedSeed": 42
+}
+```
+
+### 7.4 Idempotency & Duplicate Delivery Protection
+Kafka at-least-once delivery semantics can deliver duplicate events. `GenerationJobService.processJob` enforces strict idempotency:
+- If job `status == COMPLETED` or `status == FAILED`, the consumer logs the duplicate and immediately ignores it.
+- If job `status == RUNNING`, concurrent duplicate execution is safely suppressed.
+- Re-delivering an event never duplicates entities or corrupts Redis collection state.
+
+### 7.5 Explicit Failure Semantics
+1. **Kafka Publish Failure:** If Kafka broker publishing fails during submission, the job is immediately marked `FAILED`, the root cause is persisted in `errorMessage`, and an HTTP 503 error is returned to the client.
+2. **Worker Processing Failure:** If data generation fails (e.g. invalid schema, cyclic dependency, Redis error), the worker catches the error, sets status to `FAILED`, records `errorMessage`, and persists `completedAt` timestamp.
 
 ---
 
-## 7. Architectural Decision Records (ADRs)
+## 8. Architectural Decision Records (ADRs)
 
-### 7.1 Stateless JWT Authentication (ADR-001)
+### 8.1 Stateless JWT Authentication (ADR-001)
 Stateless HMAC-SHA256 tokens for identity and workspace authorization.
 
-### 7.2 Strong Password Hashing (ADR-002)
+### 8.2 Strong Password Hashing (ADR-002)
 BCrypt with salting (`BCryptPasswordEncoder`).
 
-### 7.3 Strict DTO Boundaries (ADR-003)
+### 8.3 Strict DTO Boundaries (ADR-003)
 All controller APIs expose and consume Java Record DTOs.
 
-### 7.4 Server-Side Workspace & Contract Isolation (ADR-004)
+### 8.4 Server-Side Workspace & Contract Isolation (ADR-004)
 All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
 
-### 7.5 Flyway Version-Controlled Migrations (ADR-005)
-Flyway scripts (`V1__...`, `V2__...`, `V3__...`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+### 8.5 Flyway Version-Controlled Migrations (ADR-005)
+Flyway scripts (`V1`, `V2`, `V3`, `V4`) manage all schema evolution with `hibernate.ddl-auto=validate`.
 
-### 7.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+### 8.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
 `OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
 
-### 7.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+### 8.7 In-Process Stateful Mock Runtime Engine (ADR-007)
 Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
 
-### 7.8 Decoupled Deterministic Data Generation Engine (ADR-008)
-- **Decision:** Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
-- **Rationale:** Ensures offline stability, reproducible test fixtures, fast generation throughput, and clean REST semantics.
+### 8.8 Decoupled Deterministic Data Generation Engine (ADR-008)
+Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
 
-### 7.9 Redis-Backed Shared Runtime State Engine (ADR-009)
-- **Decision:** Implement `RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson), while retaining `InMemoryRuntimeStateStore` for lightweight local/test profiles via `@ConditionalOnProperty(name = "mockapilab.runtime.state-store", havingValue = "redis")`.
-- **Rationale:**
-  - Enables multiple backend instances to share live mock state seamlessly.
-  - Retains high performance and atomic entity-level mutations via Redis Hashes.
-  - Preserves runtime isolation and strict collection indexing without modifying public gateway contracts or route dispatch logic.
+### 8.9 Redis-Backed Shared Runtime State Engine (ADR-009)
+`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
+
+### 8.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
+- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
+- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
 
 ---
 
-## 8. Architectural Invariants
+## 9. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hidden State Mutations:** Read operations (`GET`) never mutate runtime state; population is performed via explicit REST APIs or stateful mutations (`POST`, `PUT`).
 3. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
 4. **Module Independence:** Business modules communicate through designated services and DTOs without cyclic dependencies.
 5. **Collection Index as Source of Truth:** Collection existence is governed strictly by the collection index set, maintaining stability even when entity count reaches zero.
+6. **Three-Tier Storage Separation:** PostgreSQL is the durable system of record; Kafka is the event backbone; Redis is the live mock state.

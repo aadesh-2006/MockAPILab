@@ -2,6 +2,8 @@ package com.mockapilab.common.exception;
 
 import com.mockapilab.common.api.ApiResponse;
 import com.mockapilab.modules.contract.validation.ContractValidationException;
+import com.mockapilab.modules.runtime.messaging.GenerationJobException;
+import com.mockapilab.modules.runtime.state.RuntimeStateException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -54,6 +56,12 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleIllegalState(IllegalStateException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error(ex.getMessage(), Map.of("error", ex.getMessage())));
+    }
+
     @ExceptionHandler({InvalidCredentialsException.class, AuthenticationException.class})
     public ResponseEntity<ApiResponse<Map<String, String>>> handleAuthenticationException(Exception ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
@@ -78,11 +86,18 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
-    @ExceptionHandler(com.mockapilab.modules.runtime.state.RuntimeStateException.class)
-    public ResponseEntity<ApiResponse<Map<String, String>>> handleRuntimeStateException(com.mockapilab.modules.runtime.state.RuntimeStateException ex) {
+    @ExceptionHandler(RuntimeStateException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleRuntimeStateException(RuntimeStateException ex) {
         log.error("Runtime state error encountered: {}", ex.getMessage(), ex);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.error("Runtime state service error: " + ex.getMessage(), Map.of("error", ex.getMessage())));
+    }
+
+    @ExceptionHandler(GenerationJobException.class)
+    public ResponseEntity<ApiResponse<Map<String, String>>> handleGenerationJobException(GenerationJobException ex) {
+        log.error("Generation job error encountered: {}", ex.getMessage(), ex);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error("Generation job service error: " + ex.getMessage(), Map.of("error", ex.getMessage())));
     }
 
     @ExceptionHandler(Exception.class)
