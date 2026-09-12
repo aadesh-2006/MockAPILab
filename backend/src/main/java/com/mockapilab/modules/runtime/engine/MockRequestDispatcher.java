@@ -8,10 +8,12 @@ import com.mockapilab.modules.contract.model.normalized.NormalizedResponse;
 import com.mockapilab.modules.contract.model.normalized.NormalizedSchema;
 import com.mockapilab.modules.runtime.model.MockRuntime;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
+import com.mockapilab.modules.runtime.observability.MockApiLabMetrics;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
 import com.mockapilab.modules.runtime.state.RuntimeStateStore;
 import com.mockapilab.modules.scenario.engine.ScenarioEngine;
 import com.mockapilab.modules.scenario.engine.ScenarioEvaluationResult;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -29,7 +31,8 @@ import java.util.UUID;
  * Core dynamic mock request dispatcher.
  * <p>
  * Routes incoming HTTP requests for a given runtime ID to the compiled route table,
- * enforces schema validations, evaluates scenario failure injection rules, and executes isolated stateful REST operations.
+ * enforces schema validations, evaluates scenario failure injection rules, executes isolated stateful REST operations,
+ * and records runtime execution metrics.
  */
 @Component
 public class MockRequestDispatcher {
@@ -42,6 +45,7 @@ public class MockRequestDispatcher {
     private final DeterministicResponseGenerator responseGenerator;
     private final ScenarioEngine scenarioEngine;
     private final ObjectMapper objectMapper;
+    private final MockApiLabMetrics metrics;
 
     public MockRequestDispatcher(
             RuntimeRegistry runtimeRegistry,
@@ -53,6 +57,21 @@ public class MockRequestDispatcher {
             ScenarioEngine scenarioEngine,
             ObjectMapper objectMapper
     ) {
+        this(runtimeRegistry, runtimeRepository, stateStore, routeCompiler, requestValidator, responseGenerator, scenarioEngine, objectMapper, null);
+    }
+
+    @Autowired
+    public MockRequestDispatcher(
+            RuntimeRegistry runtimeRegistry,
+            MockRuntimeRepository runtimeRepository,
+            RuntimeStateStore stateStore,
+            RouteCompiler routeCompiler,
+            MockRequestValidator requestValidator,
+            DeterministicResponseGenerator responseGenerator,
+            ScenarioEngine scenarioEngine,
+            ObjectMapper objectMapper,
+            @Autowired(required = false) MockApiLabMetrics metrics
+    ) {
         this.runtimeRegistry = runtimeRegistry;
         this.runtimeRepository = runtimeRepository;
         this.stateStore = stateStore;
@@ -61,9 +80,29 @@ public class MockRequestDispatcher {
         this.responseGenerator = responseGenerator;
         this.scenarioEngine = scenarioEngine;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     public ResponseEntity<Object> dispatch(
+            UUID runtimeId,
+            String httpMethod,
+            String subPath,
+            String rawBody,
+            Map<String, String> queryParams,
+            Map<String, String> headers
+    ) {
+        long startTime = System.currentTimeMillis();
+        ResponseEntity<Object> response = doDispatch(runtimeId, httpMethod, subPath, rawBody, queryParams, headers);
+        long durationMs = System.currentTimeMillis() - startTime;
+
+        if (metrics != null) {
+            metrics.recordMockRequest(runtimeId, httpMethod, response.getStatusCode().value(), durationMs);
+        }
+
+        return response;
+    }
+
+    private ResponseEntity<Object> doDispatch(
             UUID runtimeId,
             String httpMethod,
             String subPath,
@@ -222,8 +261,8 @@ public class MockRequestDispatcher {
                 }
 
                 Map<String, Object> notFound = Map.of(
-                        "status", HttpStatus.NOT_FOUND.value(),
-                        "error", "Entity with ID '" + entityId + "' not found in " + collectionPath
+                    "status", HttpStatus.NOT_FOUND.value(),
+                    "error", "Entity with ID '" + entityId + "' not found in " + collectionPath
                 );
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON).body(notFound);
             }
@@ -327,7 +366,7 @@ public class MockRequestDispatcher {
         if (!p.startsWith("/")) {
             p = "/" + p;
         }
-        if (p.length() > 1 && p.endsWith("/")) {
+        while (p.length() > 1 && p.endsWith("/")) {
             p = p.substring(0, p.length() - 1);
         }
         return p;

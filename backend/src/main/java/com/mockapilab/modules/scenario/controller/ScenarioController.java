@@ -6,6 +6,7 @@ import com.mockapilab.modules.scenario.dto.ScenarioRequest;
 import com.mockapilab.modules.scenario.dto.ScenarioResponse;
 import com.mockapilab.modules.scenario.service.ScenarioService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/runtimes/{runtimeId}/scenarios")
 @Tag(name = "Scenarios", description = "Mock runtime scenario configuration and failure injector APIs")
+@SecurityRequirement(name = "bearerAuth")
 public class ScenarioController {
 
     private final ScenarioService scenarioService;

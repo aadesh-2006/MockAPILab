@@ -12,10 +12,10 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -41,8 +41,22 @@ mockapilab:
       timeout-seconds: 5
       base-url: http://localhost:9999/gemini-mock
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: false
+
 logging:
   level:
     root: INFO
     com.mockapilab: DEBUG
-    org.flywaydb: DEBUG
+    org.flywaydb: INFO

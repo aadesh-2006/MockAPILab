@@ -1,11 +1,13 @@
 package com.mockapilab.modules.scenario.engine;
 
+import com.mockapilab.modules.runtime.observability.MockApiLabMetrics;
 import com.mockapilab.modules.scenario.model.Scenario;
 import com.mockapilab.modules.scenario.model.ScenarioAction;
 import com.mockapilab.modules.scenario.model.ScenarioStatus;
 import com.mockapilab.modules.scenario.repository.ScenarioRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.regex.Pattern;
 
 /**
  * Core engine evaluating active scenarios and executing dynamic failure injection and latency policies.
@@ -34,10 +35,17 @@ public class ScenarioEngine {
     public static final int MAX_DELAY_MS = 30000;
 
     private final ScenarioRepository scenarioRepository;
+    private final MockApiLabMetrics metrics;
     private Sleeper sleeper = Thread::sleep;
 
     public ScenarioEngine(ScenarioRepository scenarioRepository) {
+        this(scenarioRepository, null);
+    }
+
+    @Autowired
+    public ScenarioEngine(ScenarioRepository scenarioRepository, @Autowired(required = false) MockApiLabMetrics metrics) {
         this.scenarioRepository = scenarioRepository;
+        this.metrics = metrics;
     }
 
     /**
@@ -106,6 +114,10 @@ public class ScenarioEngine {
                     log.info("scenario_triggered runtimeId={} scenarioId={} action=FORCE_STATUS path={} method={} statusCode={}",
                             runtimeId, scenario.getId(), normalizedPath, upperMethod, statusCode);
 
+                    if (metrics != null) {
+                        metrics.recordScenarioTriggered(runtimeId, "FORCE_STATUS", normalizedPath);
+                    }
+
                     return ScenarioEvaluationResult.shortCircuit(buildInjectedResponse(scenario, statusCode));
                 }
 
@@ -121,6 +133,10 @@ public class ScenarioEngine {
                     log.info("scenario_triggered runtimeId={} scenarioId={} action=DELAY path={} method={} delayMs={}",
                             runtimeId, scenario.getId(), normalizedPath, upperMethod, boundedDelay);
 
+                    if (metrics != null) {
+                        metrics.recordScenarioTriggered(runtimeId, "DELAY", normalizedPath);
+                    }
+
                     try {
                         sleeper.sleep(boundedDelay);
                     } catch (InterruptedException e) {
@@ -134,7 +150,6 @@ public class ScenarioEngine {
                 case RANDOM_FAILURE -> {
                     int probability = scenario.getProbabilityPercent() != null ? scenario.getProbabilityPercent() : 0;
                     if (probability <= 0) {
-                        // 0% probability never fails, does not consume execution limit
                         return ScenarioEvaluationResult.pass();
                     }
 
@@ -149,10 +164,13 @@ public class ScenarioEngine {
                         log.info("scenario_triggered runtimeId={} scenarioId={} action=RANDOM_FAILURE path={} method={} statusCode={} probability={}%",
                                 runtimeId, scenario.getId(), normalizedPath, upperMethod, statusCode, probability);
 
+                        if (metrics != null) {
+                            metrics.recordScenarioTriggered(runtimeId, "RANDOM_FAILURE", normalizedPath);
+                        }
+
                         return ScenarioEvaluationResult.shortCircuit(buildInjectedResponse(scenario, statusCode));
                     }
 
-                    // Rolled false: continue normal execution without consuming execution limit
                     return ScenarioEvaluationResult.pass();
                 }
             }

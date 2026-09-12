@@ -6,6 +6,8 @@ import com.mockapilab.modules.project.dto.CreateProjectRequest;
 import com.mockapilab.modules.project.dto.ProjectResponse;
 import com.mockapilab.modules.project.dto.UpdateProjectRequest;
 import com.mockapilab.modules.project.service.ProjectService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -28,6 +30,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/projects")
+@Tag(name = "Projects", description = "Multi-tenant project workspace management and ownership isolation")
 public class ProjectController {
 
     private final ProjectService projectService;
@@ -37,6 +40,7 @@ public class ProjectController {
     }
 
     @PostMapping
+    @Operation(summary = "Create project", description = "Creates a new workspace project owned by the authenticated user.")
     public ResponseEntity<ApiResponse<ProjectResponse>> createProject(
             @Valid @RequestBody CreateProjectRequest request,
             @AuthenticationPrincipal UserPrincipal principal
@@ -47,6 +51,7 @@ public class ProjectController {
     }
 
     @GetMapping
+    @Operation(summary = "List projects", description = "Lists all workspace projects owned by the authenticated user.")
     public ResponseEntity<ApiResponse<List<ProjectResponse>>> listProjects(
             @AuthenticationPrincipal UserPrincipal principal
     ) {
@@ -55,6 +60,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{id}")
+    @Operation(summary = "Get project by ID", description = "Retrieves project details. Fails with 403/404 if not owned by user.")
     public ResponseEntity<ApiResponse<ProjectResponse>> getProject(
             @PathVariable UUID id,
             @AuthenticationPrincipal UserPrincipal principal
@@ -64,6 +70,7 @@ public class ProjectController {
     }
 
     @PutMapping("/{id}")
+    @Operation(summary = "Update project", description = "Updates project name or description.")
     public ResponseEntity<ApiResponse<ProjectResponse>> updateProject(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateProjectRequest request,
@@ -74,6 +81,7 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{id}")
+    @Operation(summary = "Delete project", description = "Deletes a project workspace and all cascaded contracts and runtimes.")
     public ResponseEntity<ApiResponse<Void>> deleteProject(
             @PathVariable UUID id,
             @AuthenticationPrincipal UserPrincipal principal

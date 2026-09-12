@@ -522,54 +522,100 @@ Base Version (NormalizedContract v1)
 
 ---
 
-## 11. Architectural Decision Records (ADRs)
+---
 
-### 11.1 Stateless JWT Authentication (ADR-001)
-Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+## 11. Production Observability, Testing & Request Correlation (Milestone 11)
 
-### 11.2 Strong Password Hashing (ADR-002)
-BCrypt with salting (`BCryptPasswordEncoder`).
+### 11.1 Request Correlation Architecture
+- **`CorrelationIdFilter` (`Ordered.HIGHEST_PRECEDENCE`):** Inspects incoming HTTP requests for `X-Request-Id` (or generates a random UUID), sanitizes to prevent CRLF injection, attaches `X-Request-Id` to `HttpServletResponse` headers, and populates SLF4J MDC (`requestId`, `httpMethod`, `requestUri`).
+- **Structured Request Logging:** Structured logs for all incoming requests and completed responses containing `requestId`, HTTP method, path, HTTP status, and duration (ms), with automatic suppression of noisy health probes at DEBUG level.
+- **Leak Prevention:** Strictly masks and excludes passwords, JWT tokens, `Authorization` headers, raw Redis contents, and Gemini prompts from all log streams.
 
-### 11.3 Strict DTO Boundaries (ADR-003)
-All controller APIs expose and consume Java Record DTOs.
+### 11.2 Spring Boot Actuator & Health Probes
+- **Liveness & Readiness Groups:** Configured `/actuator/health/liveness` (`livenessState`) and `/actuator/health/readiness` (`readinessState`, `db`, `runtimeStateStore`).
+- **`RuntimeStateHealthIndicator`:** Custom component reporting operational status, state store type (`redis` / `in-memory`), and underlying implementation to ensure Redis state store failures are immediately distinguishable from standard application errors.
 
-### 11.4 Server-Side Workspace & Contract Isolation (ADR-004)
-All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+### 11.3 Micrometer Platform Metrics
+- `mockapilab.mock.requests.total`: Counter tagged with `runtimeId`, `method`, `statusGroup`, and `statusCode`.
+- `mockapilab.mock.requests.duration`: Timer recording mock execution latency per HTTP method and status group.
+- `mockapilab.scenario.triggered.total`: Counter tagged with `runtimeId` and `action` (`FORCE_STATUS`, `DELAY`, `RANDOM_FAILURE`).
+- `mockapilab.generation.jobs.total`: Counter tagged with lifecycle status (`QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`).
+- `mockapilab.drift.analyses.total` & `mockapilab.drift.changes.total`: Counters tracking drift executions and breaking change counts.
 
-### 11.5 Flyway Version-Controlled Migrations (ADR-005)
-Flyway scripts (`V1`, `V2`, `V3`, `V4`, `V5`, `V6`) manage all schema evolution with `hibernate.ddl-auto=validate`.
-
-### 11.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
-`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
-
-### 11.7 In-Process Stateful Mock Runtime Engine (ADR-007)
-Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
-
-### 11.8 Decoupled Deterministic Data Generation Engine (ADR-008)
-Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
-
-### 11.9 Redis-Backed Shared Runtime State Engine (ADR-009)
-`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
-
-### 11.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
-- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
-- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
-
-### 11.11 Gemini AI-Assisted Contract Extraction (ADR-011)
-- **Decision:** Use Google Gemini Generative Language REST API via a pluggable `AiProvider` to extract candidate contracts (`AiCandidateContract`), followed by deterministic validation (`AiCandidateValidator`) and conversion into canonical `NormalizedContract`.
-- **Rationale:** Enables developers to quickly create mock APIs from informal natural-language specifications or existing Spring Boot controller code, without allowing AI hallucinations to directly dictate runtime execution or bypass schema validation.
-
-### 11.12 Interactive Scenario Engine & Failure Injection Layer (ADR-012)
-- **Decision:** Implement a lightweight policy interception layer inside `MockRequestDispatcher` backed by PostgreSQL-stored `Scenario` definitions, deterministic 4-tier precedence matching, atomic database execution counting, and bounded latency.
-- **Rationale:** Allows full-stack developers to test frontend resilience against slow networks, rate limiting, auth failures, and intermittent server crashes without modifying contract schemas or polluting Redis mock state.
-
-### 11.13 Deterministic Contract Drift Detection & Semantic Diffing (ADR-013)
-- **Decision:** Implement a dedicated `ContractDiffEngine` and `DriftClassifier` operating strictly on canonical `NormalizedContract` ASTs, storing immutable reports in PostgreSQL (`contract_drift_reports` and `contract_drift_changes`).
-- **Rationale:** Detects and flags breaking changes, additions, parameter modifications, and payload drift before client breakage occurs, while preserving complete contract snapshot immutability and zero runtime side-effects.
+### 11.4 Unified Error Envelope
+All error responses consistently return a sanitized structured envelope:
+```json
+{
+  "success": false,
+  "message": "Human readable error description",
+  "data": {
+    "status": 400,
+    "error": "Bad Request",
+    "message": "Validation failed for one or more fields",
+    "path": "/api/v1/projects",
+    "requestId": "50ea06db-f736-4918-9324-1b0956773aa5",
+    "details": {
+      "name": "Project name is required"
+    }
+  },
+  "timestamp": "2026-09-12T17:20:00.000Z"
+}
+```
 
 ---
 
-## 12. Architectural Invariants
+## 12. Architectural Decision Records (ADRs)
+
+### 12.1 Stateless JWT Authentication (ADR-001)
+Stateless HMAC-SHA256 tokens for identity and workspace authorization.
+
+### 12.2 Strong Password Hashing (ADR-002)
+BCrypt with salting (`BCryptPasswordEncoder`).
+
+### 12.3 Strict DTO Boundaries (ADR-003)
+All controller APIs expose and consume Java Record DTOs.
+
+### 12.4 Server-Side Workspace & Contract Isolation (ADR-004)
+All project, contract, and runtime management queries verify project ownership on the server side (`project.owner.id == currentPrincipal.id`).
+
+### 12.5 Flyway Version-Controlled Migrations (ADR-005)
+Flyway scripts (`V1`, `V2`, `V3`, `V4`, `V5`, `V6`) manage all schema evolution with `hibernate.ddl-auto=validate`.
+
+### 12.6 Dedicated OpenAPI Parser & Reference Resolver (ADR-006)
+`OpenApiContractParser` encapsulates SwaggerParser, validates OpenAPI 3.x compliance, resolves local `$ref` pointers, and isolates the rest of the application from Swagger/OpenAPI internal classes.
+
+### 12.7 In-Process Stateful Mock Runtime Engine (ADR-007)
+Dynamic mock request dispatching via Spring MVC wildcards (`/mock/{runtimeId}/**`) backed by in-memory route compilation and partitioned state store.
+
+### 12.8 Decoupled Deterministic Data Generation Engine (ADR-008)
+Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and curated datasets without online dependencies or hidden GET mutations.
+
+### 12.9 Redis-Backed Shared Runtime State Engine (ADR-009)
+`RedisRuntimeStateStore` implementing `RuntimeStateStore` using Spring Data Redis (`StringRedisTemplate` + Jackson) with atomic hashes and set collection indexes.
+
+### 12.10 Asynchronous Mock Generation with Apache Kafka (ADR-010)
+- **Decision:** Asynchronous collection generation via Kafka topic `mockapi.generation.jobs`, durable `GenerationJob` in PostgreSQL, and background worker consumers.
+- **Rationale:** Prevents HTTP client timeouts during large dataset generation, cleanly decouples API management from heavy CPU workloads, and maintains strict idempotency across worker deliveries.
+
+### 12.11 Gemini AI-Assisted Contract Extraction (ADR-011)
+- **Decision:** Use Google Gemini Generative Language REST API via a pluggable `AiProvider` to extract candidate contracts (`AiCandidateContract`), followed by deterministic validation (`AiCandidateValidator`) and conversion into canonical `NormalizedContract`.
+- **Rationale:** Enables developers to quickly create mock APIs from informal natural-language specifications or existing Spring Boot controller code, without allowing AI hallucinations to directly dictate runtime execution or bypass schema validation.
+
+### 12.12 Interactive Scenario Engine & Failure Injection Layer (ADR-012)
+- **Decision:** Implement a lightweight policy interception layer inside `MockRequestDispatcher` backed by PostgreSQL-stored `Scenario` definitions, deterministic 4-tier precedence matching, atomic database execution counting, and bounded latency.
+- **Rationale:** Allows full-stack developers to test frontend resilience against slow networks, rate limiting, auth failures, and intermittent server crashes without modifying contract schemas or polluting Redis mock state.
+
+### 12.13 Deterministic Contract Drift Detection & Semantic Diffing (ADR-013)
+- **Decision:** Implement a dedicated `ContractDiffEngine` and `DriftClassifier` operating strictly on canonical `NormalizedContract` ASTs, storing immutable reports in PostgreSQL (`contract_drift_reports` and `contract_drift_changes`).
+- **Rationale:** Detects and flags breaking changes, additions, parameter modifications, and payload drift before client breakage occurs, while preserving complete contract snapshot immutability and zero runtime side-effects.
+
+### 12.14 End-to-End Correlation, Health Probes & Platform Observability (ADR-014)
+- **Decision:** Standardize on `X-Request-Id` correlation propagation, SLF4J MDC logging, Spring Boot Actuator liveness/readiness probes, and Micrometer lightweight metric meters.
+- **Rationale:** Ensures complete traceability across multi-tier asynchronous execution, exposes infrastructure availability without leaking internals, and provides comprehensive operational visibility without external heavy monitoring dependencies.
+
+---
+
+## 13. Architectural Invariants
 1. **Determinism over Hallucination:** Runtime mock responses and data generation must strictly follow schema rules deterministically.
 2. **Zero Hidden State Mutations:** Read operations (`GET`) never mutate runtime state; population is performed via explicit REST APIs or stateful mutations (`POST`, `PUT`).
 3. **Zero Hardcoded Secrets:** All credentials, tokens, and database secrets are externalized via environment variables.
@@ -579,3 +625,4 @@ Dedicated `generation/` subsystem using seedable PRNGs, schema heuristics, and c
 7. **AI Proposes, Engine Disposes:** AI models propose candidate contracts (`AiCandidateContract`); only deterministically validated and converted `NormalizedContract` instances are persisted and executed. AI never directly accesses, executes, or mutates live runtimes.
 8. **State Preservation on Scenario Injected Failures:** When a scenario forces a failure response on a mutating operation (`POST`, `PUT`, `DELETE`), normal mock route execution and state store mutation are strictly bypassed, preserving Redis state integrity.
 9. **Immutable Contract Versions & Analysis-Only Drift:** Contract version snapshots are strictly immutable; drift analysis is read-only, deterministic, and never mutates contract definitions, mock runtimes, or live entity stores.
+10. **Sanitized Observability & Correlation Traceability:** Every request carries an `X-Request-Id` correlation identifier, logs never expose sensitive tokens or credentials, and application errors return uniform envelopes without internal stack trace leaks.

@@ -12,6 +12,17 @@ interface SystemStatus {
   timestamp: string
 }
 
+interface ActuatorHealth {
+  status: string
+  components?: {
+    db?: { status: string }
+    livenessState?: { status: string }
+    readinessState?: { status: string }
+    runtimeStateStore?: { status: string; details?: { stateStoreType?: string; implementation?: string; status?: string } }
+    redis?: { status: string }
+  }
+}
+
 interface GenerationJobInfo {
   jobId: string
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
@@ -75,6 +86,8 @@ interface DriftReport {
 
 function App() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
+  const [actuatorHealth, setActuatorHealth] = useState<ActuatorHealth | null>(null)
+  const [lastCorrelationId, setLastCorrelationId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -294,6 +307,8 @@ components:
   useEffect(() => {
     fetch('/api/v1/status')
       .then((res) => {
+        const reqId = res.headers.get('X-Request-Id')
+        if (reqId) setLastCorrelationId(reqId)
         if (!res.ok) {
           throw new Error(`HTTP error! status: ${res.status}`)
         }
@@ -307,6 +322,11 @@ components:
         setError(err.message)
         setLoading(false)
       })
+
+    fetch('/actuator/health')
+      .then((res) => res.json())
+      .then((data) => setActuatorHealth(data))
+      .catch(() => {})
   }, [])
 
   const handleIngest = async (e: React.FormEvent) => {
@@ -917,11 +937,16 @@ public record CreateProductRequest(String title, Double price, String category) 
         )}
         {status && (
           <div className="status-box success">
-            <p><strong>Service:</strong> {status.service}</p>
-            <p><strong>Status:</strong> {status.status}</p>
-            <p><strong>Version:</strong> {status.version}</p>
-            <p><strong>Environment:</strong> {status.environment}</p>
-            <p><strong>Spring Boot:</strong> {status.springBootVersion} (Java {status.javaVersion})</p>
+            <div className="status-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
+              <div><p><strong>Service:</strong> {status.service}</p></div>
+              <div><p><strong>Status:</strong> <span style={{ color: '#4ade80', fontWeight: 700 }}>● {status.status}</span></p></div>
+              <div><p><strong>Version:</strong> {status.version}</p></div>
+              <div><p><strong>Architecture:</strong> Modular Monolith</p></div>
+              <div><p><strong>Spring Boot:</strong> {status.springBootVersion} (Java {status.javaVersion})</p></div>
+              <div><p><strong>State Store:</strong> {actuatorHealth?.components?.runtimeStateStore?.details?.implementation || 'Operational'}</p></div>
+              <div><p><strong>Actuator Probes:</strong> Liveness: {actuatorHealth?.components?.livenessState?.status || 'UP'} | Readiness: {actuatorHealth?.components?.readinessState?.status || 'UP'}</p></div>
+              <div><p><strong>Correlation ID:</strong> <code style={{ fontSize: '0.78rem', background: '#0f172a', padding: '2px 6px', borderRadius: '4px' }}>{lastCorrelationId || 'active'}</code></p></div>
+            </div>
           </div>
         )}
       </section>

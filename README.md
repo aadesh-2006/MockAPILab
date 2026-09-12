@@ -11,6 +11,7 @@
 [![AI Engine](https://img.shields.io/badge/AI%20Engine-Gemini%20Contract%20Extraction-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/ai/)
 [![Scenario Engine](https://img.shields.io/badge/Scenario%20Engine-Interactive%20Failure%20Injector-darkred.svg)](backend/src/main/java/com/mockapilab/modules/scenario/)
 [![Drift Detection](https://img.shields.io/badge/Drift%20Detection-Semantic%20Breaking%20Change%20Classifier-blue.svg)](backend/src/main/java/com/mockapilab/modules/contract/drift/)
+[![Observability](https://img.shields.io/badge/Observability-Actuator%20%7C%20MDC%20Tracing%20%7C%20Micrometer-green.svg)](backend/src/main/java/com/mockapilab/common/logging/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.x%20Normalized%20Engine-brightgreen.svg)](docs/examples/sample-users-api.yaml)
 [![Mock Runtime](https://img.shields.io/badge/Mock%20Runtime-Stateful%20REST%20Engine-blueviolet.svg)](backend/src/main/java/com/mockapilab/modules/runtime/)
 [![Data Engine](https://img.shields.io/badge/Data%20Engine-Deterministic%20Realistic%20Generator-teal.svg)](backend/src/main/java/com/mockapilab/modules/runtime/generation/)
@@ -239,7 +240,8 @@ com.mockapilab
 | **Schema Migrations**| Flyway Migration Engine | Deterministic database migrations (`V1`, `V2`, `V3`, `V4`, `V5`) |
 | **Frontend** | React 18, TypeScript, Vite, TailwindCSS | Developer dashboard, Scenario Studio, AI extraction & runtime controls |
 | **Containers** | Docker, Docker Compose | Reproducible local and CI/CD development environment |
-| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (129 tests) |
+| **Observability** | Spring Boot Actuator, Micrometer, SLF4J MDC | Health/readiness checks, operational metrics, request correlation |
+| **Testing** | JUnit 5, Mockito, MockMvc, H2 | Comprehensive automated testing suite (146 tests) |
 
 ---
 
@@ -312,7 +314,6 @@ com.mockapilab
 - [x] Enforced atomic concurrency execution counting (`maxExecutions`) via database CAS update queries without distributed locks.
 - [x] Implemented authenticated scenario management REST APIs with workspace owner isolation.
 - [x] Built React Scenario Studio with preset switchers (Auth 401, Rate Limit 429, Flaky Server 500, Latency 2000ms).
-- [x] Created comprehensive automated test suite (129 tests total, 100% pass rate).
 
 ### ✅ Milestone 10: Contract Drift Detection (Complete)
 - [x] Created Flyway migration `V6__init_contract_drift_reports.sql` and durable JPA entities (`ContractDriftReport`, `ContractDriftChange`).
@@ -323,11 +324,21 @@ com.mockapilab
 - [x] Implemented authenticated REST APIs (`POST .../drift`, `GET .../drift`, `GET .../drift/{reportId}`, `POST .../versions`) with strict project owner authorization.
 - [x] Enforced complete snapshot immutability and zero runtime/state mutation side-effects.
 - [x] Built interactive React Contract Drift Viewer with version diff selectors, summary metric cards, filter tabs, and Old vs New diff rendering.
-- [x] Expanded test suite to 142 automated tests with 100% pass rate.
+
+### ✅ Milestone 11: Observability, Testing & Production Polish (Complete)
+- [x] Implemented `CorrelationIdFilter` propagating `X-Request-Id` through SLF4J MDC and response headers without logging sensitive credentials or tokens.
+- [x] Unified error envelope formatting across `GlobalExceptionHandler`, `RestAuthenticationEntryPoint`, and `RestAccessDeniedHandler` with correlation ID tracking.
+- [x] Exposed Spring Boot Actuator endpoints (`/actuator/health`, `/actuator/info`, `/actuator/metrics`) and custom `RuntimeStateHealthIndicator`.
+- [x] Registered custom Micrometer platform metrics (`mockapi.requests.total`, `mockapi.scenarios.matched`, `mockapi.generation.jobs`, `mockapi.drift.analyses`).
+- [x] Created `EndToEndPlatformIntegrationTest` validating complete platform lifecycle across Auth, Projects, Contracts, Stateful Runtime, Scenarios, and Drift Detection.
+- [x] Documented OpenAPI / Swagger schemas across all controllers (`/swagger-ui.html`).
+- [x] Polished React frontend UX with loading indicators, empty states, health indicator badge, and request ID tracking pill.
+- [x] Updated comprehensive architecture documentation and ADR records (`ADR-014`).
+- [x] Verified full test suite passing (146 tests total, 100% pass rate).
 
 ---
 
-## 8. Planned Development Phases
+## 8. Milestone Roadmap
 
 ```
 +-------------------------------------------------------------+
@@ -350,6 +361,8 @@ com.mockapilab
 │ Milestone 9: Interactive Scenario Engine (Complete)         │
 +-------------------------------------------------------------+
 │ Milestone 10: Contract Drift Detection (Complete)           │
++-------------------------------------------------------------+
+│ Milestone 11: Observability, Testing & Polish (Complete)    │
 +-------------------------------------------------------------+
 ```
 
@@ -386,7 +399,8 @@ Run the Spring Boot application:
 cd backend
 mvn spring-boot:run
 ```
-- Health endpoint: `http://localhost:8080/api/v1/status`
+- Health endpoint: `http://localhost:8080/actuator/health`
+- Metrics endpoint: `http://localhost:8080/actuator/metrics`
 - Swagger UI: `http://localhost:8080/swagger-ui.html`
 
 ### Running the Frontend

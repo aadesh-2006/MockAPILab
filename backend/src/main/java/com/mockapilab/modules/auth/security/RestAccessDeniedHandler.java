@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.mockapilab.common.api.ApiResponse;
+import com.mockapilab.common.logging.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
@@ -12,6 +13,7 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -37,9 +39,16 @@ public class RestAccessDeniedHandler implements AccessDeniedHandler {
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);
 
-        ApiResponse<Map<String, String>> apiResponse = ApiResponse.error(
+        Map<String, Object> errorDetails = new LinkedHashMap<>();
+        errorDetails.put("status", HttpServletResponse.SC_FORBIDDEN);
+        errorDetails.put("error", "Forbidden");
+        errorDetails.put("message", "Access is denied");
+        errorDetails.put("path", request.getRequestURI());
+        errorDetails.put("requestId", CorrelationIdFilter.getCorrelationId());
+
+        ApiResponse<Map<String, Object>> apiResponse = ApiResponse.error(
                 "Access is denied",
-                Map.of("error", "Forbidden", "path", request.getRequestURI())
+                errorDetails
         );
 
         response.getWriter().write(objectMapper.writeValueAsString(apiResponse));

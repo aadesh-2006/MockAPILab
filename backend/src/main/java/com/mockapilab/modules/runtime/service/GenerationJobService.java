@@ -18,11 +18,13 @@ import com.mockapilab.modules.runtime.model.GenerationJob;
 import com.mockapilab.modules.runtime.model.GenerationJobStatus;
 import com.mockapilab.modules.runtime.model.MockRuntime;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
+import com.mockapilab.modules.runtime.observability.MockApiLabMetrics;
 import com.mockapilab.modules.runtime.repository.GenerationJobRepository;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
 import com.mockapilab.modules.runtime.state.RuntimeStateStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +48,7 @@ public class GenerationJobService {
     private final GenerationJobProducer generationJobProducer;
     private final MockDataGenerator mockDataGenerator;
     private final RuntimeStateStore stateStore;
+    private final MockApiLabMetrics metrics;
 
     public GenerationJobService(
             GenerationJobRepository generationJobRepository,
@@ -55,12 +58,26 @@ public class GenerationJobService {
             MockDataGenerator mockDataGenerator,
             RuntimeStateStore stateStore
     ) {
+        this(generationJobRepository, runtimeRepository, projectRepository, generationJobProducer, mockDataGenerator, stateStore, null);
+    }
+
+    @Autowired
+    public GenerationJobService(
+            GenerationJobRepository generationJobRepository,
+            MockRuntimeRepository runtimeRepository,
+            ProjectRepository projectRepository,
+            GenerationJobProducer generationJobProducer,
+            MockDataGenerator mockDataGenerator,
+            RuntimeStateStore stateStore,
+            @Autowired(required = false) MockApiLabMetrics metrics
+    ) {
         this.generationJobRepository = generationJobRepository;
         this.runtimeRepository = runtimeRepository;
         this.projectRepository = projectRepository;
         this.generationJobProducer = generationJobProducer;
         this.mockDataGenerator = mockDataGenerator;
         this.stateStore = stateStore;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -87,6 +104,10 @@ public class GenerationJobService {
         job.setStatus(GenerationJobStatus.QUEUED);
         GenerationJob savedJob = generationJobRepository.save(job);
 
+        if (metrics != null) {
+            metrics.recordGenerationJob(GenerationJobStatus.QUEUED);
+        }
+
         log.info("Created GenerationJob with id: {} (status: QUEUED) for runtimeId: {}, collection: {}, count: {}",
                 savedJob.getId(), runtimeId, normalizedCollection, count);
 
@@ -107,6 +128,11 @@ public class GenerationJobService {
             savedJob.setErrorMessage("Failed to dispatch job to Kafka: " + ex.getMessage());
             savedJob.setCompletedAt(Instant.now());
             generationJobRepository.save(savedJob);
+
+            if (metrics != null) {
+                metrics.recordGenerationJob(GenerationJobStatus.FAILED);
+            }
+
             throw new GenerationJobException("Failed to queue generation job via Kafka: " + ex.getMessage(), ex);
         }
 
@@ -163,6 +189,10 @@ public class GenerationJobService {
         job.setStartedAt(Instant.now());
         job = generationJobRepository.saveAndFlush(job);
 
+        if (metrics != null) {
+            metrics.recordGenerationJob(GenerationJobStatus.RUNNING);
+        }
+
         try {
             MockRuntime runtime = job.getRuntime();
             NormalizedContract contract = runtime.getContractVersion() != null
@@ -188,6 +218,10 @@ public class GenerationJobService {
             job.setCompletedAt(Instant.now());
             generationJobRepository.save(job);
 
+            if (metrics != null) {
+                metrics.recordGenerationJob(GenerationJobStatus.COMPLETED);
+            }
+
             log.info("Successfully completed GenerationJob {} for collection '{}': {} entities generated into state store with effective seed {}",
                     job.getId(), job.getCollectionPath(), entities.size(), effectiveSeed);
         } catch (Throwable ex) {
@@ -197,6 +231,10 @@ public class GenerationJobService {
             job.setErrorMessage(ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
             job.setCompletedAt(Instant.now());
             generationJobRepository.save(job);
+
+            if (metrics != null) {
+                metrics.recordGenerationJob(GenerationJobStatus.FAILED);
+            }
         }
     }
 

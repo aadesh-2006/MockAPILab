@@ -14,6 +14,8 @@ import com.mockapilab.modules.contract.repository.ContractRepository;
 import com.mockapilab.modules.contract.repository.ContractVersionRepository;
 import com.mockapilab.modules.project.model.Project;
 import com.mockapilab.modules.project.repository.ProjectRepository;
+import com.mockapilab.modules.runtime.observability.MockApiLabMetrics;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +33,7 @@ public class ContractDriftService {
     private final ContractVersionRepository contractVersionRepository;
     private final ProjectRepository projectRepository;
     private final ContractDiffEngine diffEngine;
+    private final MockApiLabMetrics metrics;
 
     public ContractDriftService(
             ContractDriftReportRepository driftReportRepository,
@@ -39,11 +42,24 @@ public class ContractDriftService {
             ProjectRepository projectRepository,
             ContractDiffEngine diffEngine
     ) {
+        this(driftReportRepository, contractRepository, contractVersionRepository, projectRepository, diffEngine, null);
+    }
+
+    @Autowired
+    public ContractDriftService(
+            ContractDriftReportRepository driftReportRepository,
+            ContractRepository contractRepository,
+            ContractVersionRepository contractVersionRepository,
+            ProjectRepository projectRepository,
+            ContractDiffEngine diffEngine,
+            @Autowired(required = false) MockApiLabMetrics metrics
+    ) {
         this.driftReportRepository = driftReportRepository;
         this.contractRepository = contractRepository;
         this.contractVersionRepository = contractVersionRepository;
         this.projectRepository = projectRepository;
         this.diffEngine = diffEngine;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -82,6 +98,16 @@ public class ContractDriftService {
         }
 
         ContractDriftReport savedReport = driftReportRepository.save(report);
+
+        if (metrics != null) {
+            metrics.recordDriftAnalysis(
+                    savedReport.getChanges().size(),
+                    savedReport.getBreakingChangeCount(),
+                    savedReport.getNonBreakingChangeCount(),
+                    savedReport.getInformationalChangeCount()
+            );
+        }
+
         return DriftReportResponse.fromEntity(savedReport);
     }
 
