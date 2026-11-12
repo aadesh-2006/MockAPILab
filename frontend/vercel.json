@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://mockapilab-dxhr.onrender.com/api/:path*"
+    },
+    {
+      "source": "/mock/:path*",
+      "destination": "https://mockapilab-dxhr.onrender.com/mock/:path*"
+    },
+    {
+      "source": "/actuator/:path*",
+      "destination": "https://mockapilab-dxhr.onrender.com/actuator/:path*"
+    }
+  ]
+}
