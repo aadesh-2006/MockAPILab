@@ -207,11 +207,14 @@ class GenerationJobServiceTest {
         UUID jobId = UUID.randomUUID();
         GenerationJob job = new GenerationJob(runtime, projectId, "/users", 3, 100L);
         job.setId(jobId);
+        job.setFencingToken(1L);
         job.setStatus(GenerationJobStatus.QUEUED);
 
+        when(generationJobRepository.claimQueuedJob(eq(jobId), any())).thenReturn(1);
         when(generationJobRepository.findById(jobId)).thenReturn(Optional.of(job));
-        when(generationJobRepository.saveAndFlush(any(GenerationJob.class))).thenAnswer(i -> i.getArgument(0));
-        when(generationJobRepository.save(any(GenerationJob.class))).thenAnswer(i -> i.getArgument(0));
+        when(generationJobRepository.existsByIdAndStatus(jobId, GenerationJobStatus.RUNNING)).thenReturn(true);
+        when(stateStore.initializeCollection(eq(runtimeId), eq("/users"), any(), anyLong())).thenReturn(true);
+        when(generationJobRepository.completeRunningJob(eq(jobId), eq(100L), any())).thenReturn(1);
 
         List<Map<String, Object>> mockEntities = List.of(
                 Map.of("id", "1", "name", "Alice"),
@@ -220,26 +223,18 @@ class GenerationJobServiceTest {
         );
         when(mockDataGenerator.generateCollection(any(), eq(3), eq(100L), any())).thenReturn(mockEntities);
 
-        GenerationJobEvent event = new GenerationJobEvent(jobId, runtimeId, projectId, "/users", 3, 100L);
+        GenerationJobEvent event = new GenerationJobEvent(jobId, runtimeId, projectId, "/users", 3, 100L, 1L);
         generationJobService.processJob(event);
 
-        assertThat(job.getStatus()).isEqualTo(GenerationJobStatus.COMPLETED);
-        assertThat(job.getEffectiveSeed()).isEqualTo(100L);
-        assertThat(job.getStartedAt()).isNotNull();
-        assertThat(job.getCompletedAt()).isNotNull();
-
-        verify(stateStore).initializeCollection(runtimeId, "/users", mockEntities);
+        verify(generationJobRepository).completeRunningJob(eq(jobId), eq(100L), any());
+        verify(stateStore).initializeCollection(runtimeId, "/users", mockEntities, 1L);
     }
 
     @Test
     @DisplayName("6. processJob idempotency: ignores already COMPLETED job")
     void testProcessJobIdempotencyCompleted() {
         UUID jobId = UUID.randomUUID();
-        GenerationJob job = new GenerationJob(runtime, projectId, "/users", 3, 100L);
-        job.setId(jobId);
-        job.setStatus(GenerationJobStatus.COMPLETED);
-
-        when(generationJobRepository.findById(jobId)).thenReturn(Optional.of(job));
+        when(generationJobRepository.claimQueuedJob(eq(jobId), any())).thenReturn(0);
 
         GenerationJobEvent event = new GenerationJobEvent(jobId, runtimeId, projectId, "/users", 3, 100L);
         generationJobService.processJob(event);
@@ -252,11 +247,7 @@ class GenerationJobServiceTest {
     @DisplayName("7. processJob idempotency: ignores already FAILED job")
     void testProcessJobIdempotencyFailed() {
         UUID jobId = UUID.randomUUID();
-        GenerationJob job = new GenerationJob(runtime, projectId, "/users", 3, 100L);
-        job.setId(jobId);
-        job.setStatus(GenerationJobStatus.FAILED);
-
-        when(generationJobRepository.findById(jobId)).thenReturn(Optional.of(job));
+        when(generationJobRepository.claimQueuedJob(eq(jobId), any())).thenReturn(0);
 
         GenerationJobEvent event = new GenerationJobEvent(jobId, runtimeId, projectId, "/users", 3, 100L);
         generationJobService.processJob(event);
@@ -273,9 +264,9 @@ class GenerationJobServiceTest {
         job.setId(jobId);
         job.setStatus(GenerationJobStatus.QUEUED);
 
+        when(generationJobRepository.claimQueuedJob(eq(jobId), any())).thenReturn(1);
         when(generationJobRepository.findById(jobId)).thenReturn(Optional.of(job));
-        when(generationJobRepository.saveAndFlush(any(GenerationJob.class))).thenAnswer(i -> i.getArgument(0));
-        when(generationJobRepository.save(any(GenerationJob.class))).thenAnswer(i -> i.getArgument(0));
+        when(generationJobRepository.failRunningJob(eq(jobId), any(), any())).thenReturn(1);
 
         when(mockDataGenerator.generateCollection(any(), eq(3), eq(100L), any()))
                 .thenThrow(new RuntimeException("Schema evaluation cycle detected"));
@@ -283,10 +274,7 @@ class GenerationJobServiceTest {
         GenerationJobEvent event = new GenerationJobEvent(jobId, runtimeId, projectId, "/users", 3, 100L);
         generationJobService.processJob(event);
 
-        assertThat(job.getStatus()).isEqualTo(GenerationJobStatus.FAILED);
-        assertThat(job.getErrorMessage()).contains("Schema evaluation cycle detected");
-        assertThat(job.getCompletedAt()).isNotNull();
-
-        verify(stateStore, never()).initializeCollection(any(), any(), any());
+        verify(generationJobRepository).failRunningJob(eq(jobId), org.mockito.ArgumentMatchers.contains("Schema evaluation cycle detected"), any());
+        verify(stateStore, never()).initializeCollection(any(), any(), any(), anyLong());
     }
 }

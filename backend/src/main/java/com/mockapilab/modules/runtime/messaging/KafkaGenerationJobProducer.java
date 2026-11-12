@@ -38,6 +38,10 @@ public class KafkaGenerationJobProducer implements GenerationJobProducer {
         try {
             kafkaTemplate.send(topic, key, event).get(5, TimeUnit.SECONDS);
             log.info("Successfully dispatched GenerationJobEvent for jobId: {} to Kafka topic '{}'", event.jobId(), topic);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while publishing GenerationJobEvent for jobId: {} to topic '{}'", event.jobId(), topic, ex);
+            throw new GenerationJobException("Interrupted while publishing generation job to Kafka topic: " + topic, ex);
         } catch (Exception ex) {
             log.error("Failed to publish GenerationJobEvent for jobId: {} to topic '{}'", event.jobId(), topic, ex);
             throw new GenerationJobException("Failed to publish generation job to Kafka topic: " + topic, ex);

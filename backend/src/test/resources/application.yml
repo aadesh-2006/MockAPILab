@@ -21,6 +21,8 @@ spring:
     locations: classpath:db/migration
 
 mockapilab:
+  scheduling:
+    enabled: false
   jwt:
     secret: test-jwt-secret-key-that-is-at-least-256-bits-long-for-hmac-sha-testing-suite
     expiration-ms: 3600000

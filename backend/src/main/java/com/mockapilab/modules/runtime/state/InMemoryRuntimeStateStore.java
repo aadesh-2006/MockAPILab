@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,6 +25,10 @@ public class InMemoryRuntimeStateStore implements RuntimeStateStore {
 
     // runtimeId -> (collectionPath -> (entityId -> entityAttributes))
     private final ConcurrentHashMap<UUID, ConcurrentHashMap<String, Map<String, Map<String, Object>>>> state = new ConcurrentHashMap<>();
+    // runtimeId -> (collectionPath -> latest fencing token)
+    private final ConcurrentHashMap<UUID, ConcurrentHashMap<String, Long>> fencingTokens = new ConcurrentHashMap<>();
+    // Tombstoned runtime IDs that must reject late writes from in-flight workers
+    private final Set<UUID> deletedRuntimes = ConcurrentHashMap.newKeySet();
 
     @Override
     public List<Map<String, Object>> getCollection(UUID runtimeId, String collectionPath) {
@@ -104,7 +109,14 @@ public class InMemoryRuntimeStateStore implements RuntimeStateStore {
     }
 
     @Override
-    public void initializeCollection(UUID runtimeId, String collectionPath, List<Map<String, Object>> seedEntities) {
+    public boolean initializeCollection(UUID runtimeId, String collectionPath, List<Map<String, Object>> seedEntities, long fencingToken) {
+        if (fencingToken < 0) {
+            throw new IllegalArgumentException("fencingToken must be non-negative (got " + fencingToken + ")");
+        }
+        if (deletedRuntimes.contains(runtimeId)) {
+            return false;
+        }
+
         String normalizedPath = normalizeCollectionPath(collectionPath);
         ConcurrentHashMap<String, Map<String, Map<String, Object>>> runtimeData =
                 state.computeIfAbsent(runtimeId, k -> new ConcurrentHashMap<>());
@@ -112,16 +124,41 @@ public class InMemoryRuntimeStateStore implements RuntimeStateStore {
         Map<String, Map<String, Object>> collection =
                 runtimeData.computeIfAbsent(normalizedPath, k -> Collections.synchronizedMap(new LinkedHashMap<>()));
 
+        ConcurrentHashMap<String, Long> runtimeTokens =
+                fencingTokens.computeIfAbsent(runtimeId, k -> new ConcurrentHashMap<>());
+
         synchronized (collection) {
-            for (Map<String, Object> seed : seedEntities) {
-                String id = extractOrGenerateId(seed);
-                collection.put(id, new LinkedHashMap<>(seed));
+            if (deletedRuntimes.contains(runtimeId)) {
+                state.remove(runtimeId);
+                return false;
             }
+            Long currentToken = runtimeTokens.get(normalizedPath);
+            if (currentToken != null && fencingToken <= currentToken) {
+                return false;
+            }
+            if (fencingToken > 0) {
+                runtimeTokens.put(normalizedPath, fencingToken);
+            }
+            collection.clear();
+            if (seedEntities != null) {
+                for (Map<String, Object> seed : seedEntities) {
+                    String id = extractOrGenerateId(seed);
+                    collection.put(id, new LinkedHashMap<>(seed));
+                }
+            }
+            return true;
         }
     }
 
     @Override
     public void clearRuntime(UUID runtimeId) {
+        state.remove(runtimeId);
+        fencingTokens.remove(runtimeId);
+    }
+
+    @Override
+    public void markRuntimeDeleted(UUID runtimeId) {
+        deletedRuntimes.add(runtimeId);
         state.remove(runtimeId);
     }
 

@@ -11,6 +11,17 @@ public record GenerationJobEvent(
         UUID projectId,
         String collection,
         int count,
-        Long requestedSeed
+        Long requestedSeed,
+        long fencingToken
 ) {
+    public GenerationJobEvent(
+            UUID jobId,
+            UUID runtimeId,
+            UUID projectId,
+            String collection,
+            int count,
+            Long requestedSeed
+    ) {
+        this(jobId, runtimeId, projectId, collection, count, requestedSeed, 0L);
+    }
 }

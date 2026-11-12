@@ -38,14 +38,32 @@ public interface RuntimeStateStore {
     boolean deleteEntity(UUID runtimeId, String collectionPath, String entityId);
 
     /**
-     * Initializes or seeds a collection with initial mock entities.
+     * Initializes or seeds a collection with initial mock entities, replacing any prior entries.
      */
-    void initializeCollection(UUID runtimeId, String collectionPath, List<Map<String, Object>> seedEntities);
+    default void initializeCollection(UUID runtimeId, String collectionPath, List<Map<String, Object>> seedEntities) {
+        initializeCollection(runtimeId, collectionPath, seedEntities, 0L);
+    }
+
+    /**
+     * Atomically replaces a collection with initial mock entities if the supplied monotonic
+     * {@code fencingToken} (when {@code > 0}) is strictly newer than the last applied token.
+     *
+     * @return {@code true} if the collection was replaced, {@code false} if rejected due to a stale fencing token
+     */
+    boolean initializeCollection(UUID runtimeId, String collectionPath, List<Map<String, Object>> seedEntities, long fencingToken);
 
     /**
      * Clears all state associated with a runtime instance.
      */
     void clearRuntime(UUID runtimeId);
+
+    /**
+     * Marks a runtime as deleted and clears its active collection state while preserving
+     * deletion tombstone / fencing protection against in-flight workers.
+     */
+    default void markRuntimeDeleted(UUID runtimeId) {
+        clearRuntime(runtimeId);
+    }
 
     /**
      * Returns the total count of stored entities for a runtime instance.

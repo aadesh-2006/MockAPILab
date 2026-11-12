@@ -75,4 +75,26 @@ class KafkaGenerationJobProducerTest {
                 .isInstanceOf(GenerationJobException.class)
                 .hasMessageContaining("Failed to publish generation job to Kafka topic");
     }
+
+    @Test
+    @DisplayName("3. sendJob restores interrupt flag when interrupted during Kafka send")
+    void testSendJobInterruptedRestoresInterruptFlag() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        GenerationJobEvent event = new GenerationJobEvent(jobId, UUID.randomUUID(), UUID.randomUUID(), "/pets", 10, 42L);
+
+        @SuppressWarnings("unchecked")
+        CompletableFuture<SendResult<String, Object>> interruptedFuture = org.mockito.Mockito.mock(CompletableFuture.class);
+        when(interruptedFuture.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                .thenThrow(new InterruptedException("Thread interrupted during shutdown"));
+        when(kafkaTemplate.send(any(), any(), any())).thenReturn(interruptedFuture);
+
+        try {
+            assertThatThrownBy(() -> producer.sendJob(event))
+                    .isInstanceOf(GenerationJobException.class)
+                    .hasMessageContaining("Interrupted while publishing generation job");
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted(); // clear interrupt flag for test runner
+        }
+    }
 }

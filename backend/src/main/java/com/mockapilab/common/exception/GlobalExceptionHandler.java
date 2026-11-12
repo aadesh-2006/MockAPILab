@@ -140,7 +140,12 @@ public class GlobalExceptionHandler {
             HttpServletRequest request
     ) {
         log.error("Generation job error encountered: {}", ex.getMessage(), ex);
-        return buildErrorResponse(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable", "Generation job service error: " + ex.getMessage(), request);
+        return buildErrorResponse(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "Service Unavailable",
+                "Generation job dispatch or processing is temporarily unavailable",
+                request
+        );
     }
 
     @ExceptionHandler(AiConfigurationException.class)

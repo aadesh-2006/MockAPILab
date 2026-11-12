@@ -47,6 +47,9 @@ public class GenerationJob {
     @Column(name = "effective_seed")
     private Long effectiveSeed;
 
+    @Column(name = "fencing_token", nullable = false)
+    private long fencingToken;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private GenerationJobStatus status;
@@ -139,6 +142,14 @@ public class GenerationJob {
 
     public void setEffectiveSeed(Long effectiveSeed) {
         this.effectiveSeed = effectiveSeed;
+    }
+
+    public long getFencingToken() {
+        return fencingToken;
+    }
+
+    public void setFencingToken(long fencingToken) {
+        this.fencingToken = fencingToken;
     }
 
     public GenerationJobStatus getStatus() {

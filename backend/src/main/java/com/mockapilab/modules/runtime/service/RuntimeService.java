@@ -24,6 +24,7 @@ import com.mockapilab.modules.runtime.engine.RuntimeRegistry;
 import com.mockapilab.modules.runtime.generation.MockDataGenerator;
 import com.mockapilab.modules.runtime.model.MockRuntime;
 import com.mockapilab.modules.runtime.model.MockRuntimeStatus;
+import com.mockapilab.modules.runtime.repository.GenerationJobRepository;
 import com.mockapilab.modules.runtime.repository.MockRuntimeRepository;
 import com.mockapilab.modules.runtime.state.RuntimeStateStore;
 import org.springframework.stereotype.Service;
@@ -43,6 +44,7 @@ import java.util.UUID;
 public class RuntimeService {
 
     private final MockRuntimeRepository runtimeRepository;
+    private final GenerationJobRepository generationJobRepository;
     private final ProjectRepository projectRepository;
     private final ContractRepository contractRepository;
     private final ContractVersionRepository contractVersionRepository;
@@ -53,6 +55,7 @@ public class RuntimeService {
 
     public RuntimeService(
             MockRuntimeRepository runtimeRepository,
+            GenerationJobRepository generationJobRepository,
             ProjectRepository projectRepository,
             ContractRepository contractRepository,
             ContractVersionRepository contractVersionRepository,
@@ -62,6 +65,7 @@ public class RuntimeService {
             MockDataGenerator mockDataGenerator
     ) {
         this.runtimeRepository = runtimeRepository;
+        this.generationJobRepository = generationJobRepository;
         this.projectRepository = projectRepository;
         this.contractRepository = contractRepository;
         this.contractVersionRepository = contractVersionRepository;
@@ -174,7 +178,11 @@ public class RuntimeService {
         NormalizedSchema itemSchema = resolveItemSchemaForCollection(contract, normalizedCollection);
 
         List<Map<String, Object>> entities = mockDataGenerator.generateCollection(itemSchema, count, effectiveSeed, contract);
-        stateStore.initializeCollection(runtimeId, normalizedCollection, entities);
+        long fencingToken = generationJobRepository.nextFencingToken();
+        boolean applied = stateStore.initializeCollection(runtimeId, normalizedCollection, entities, fencingToken);
+        if (!applied) {
+            throw new IllegalStateException("Mock data generation was superseded by a newer operation or deleted runtime");
+        }
 
         return new GenerateDataResponse(
                 runtimeId,
@@ -207,8 +215,9 @@ public class RuntimeService {
         MockRuntime runtime = runtimeRepository.findByIdAndProjectId(runtimeId, projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Runtime not found with id: " + runtimeId));
 
+        generationJobRepository.failActiveJobsForRuntime(runtimeId, Instant.now(), "Runtime deleted");
         runtimeRegistry.unregister(runtimeId);
-        stateStore.clearRuntime(runtimeId);
+        stateStore.markRuntimeDeleted(runtimeId);
         runtimeRepository.delete(runtime);
     }
 
